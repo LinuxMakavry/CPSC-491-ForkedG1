@@ -32,7 +32,6 @@ text file with one  Name#Tag  entry per line.
 
 import argparse
 import csv
-import json
 import os
 import sys
 import time
@@ -470,7 +469,7 @@ def main():
     save_pending_queue(args.queue_file, puuid_queue)
 
     print(f"\nDone. {new_rows} new rows written to: {args.out}")
-    print(f"Total unique matches seen (all runs): {len(seen_match_ids)}")
+    print(f"Total unique matches seen (all runs): {len(fetched_match_ids)}")
 
 
 if __name__ == "__main__":
