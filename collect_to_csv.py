@@ -254,6 +254,22 @@ def append_seen_puuid(path: str, puuid: str):
         f.write(puuid + "\n")
 
 
+def load_pending_queue(path: str) -> deque[str]:
+    """Load the persisted PUUID queue from a previous interrupted run."""
+    if not os.path.exists(path):
+        return deque()
+    with open(path, "r", encoding="utf-8") as f:
+        return deque(line.strip() for line in f if line.strip())
+
+
+def save_pending_queue(path: str, queue: deque[str]):
+    """Write the current queue to disk (overwrites each time)."""
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        for puuid in queue:
+            f.write(puuid + "\n")
+
+
 CSV_COLUMNS = [
     "match_id", "game_duration_s",
     "gold_diff", "kill_diff", "death_diff", "assist_diff",
@@ -296,6 +312,10 @@ def parse_args():
         help="File tracking already-queried PUUIDs."
     )
     parser.add_argument(
+        "--queue-file", default="data/pending_puuids.txt",
+        help="Persisted PUUID queue — survives interruptions."
+    )
+    parser.add_argument(
         "--matches-per-player", type=int, default=20,
         help="Recent ranked matches to fetch per player (max 100, default 20)."
     )
@@ -326,29 +346,34 @@ def main():
     print(f"Resuming: {len(seen_match_ids)} matches already collected, "
           f"{len(seen_puuids)} PUUIDs already queried.")
 
-    # ---- Build initial PUUID queue from seeds ----
-    seeds = list(SEED_SUMMONERS)
+    # ---- Restore persisted queue OR build from seeds ----
+    puuid_queue: deque[str] = load_pending_queue(args.queue_file)
 
-    if args.seeds_file and os.path.exists(args.seeds_file):
-        with open(args.seeds_file, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if "#" in line:
-                    name, tag = line.split("#", 1)
-                    seeds.append((name.strip(), tag.strip()))
+    if puuid_queue:
+        # Filter out any that got processed since the queue was saved
+        puuid_queue = deque(p for p in puuid_queue if p not in seen_puuids)
+        print(f"Restored {len(puuid_queue)} PUUIDs from previous run's queue.")
+    else:
+        seeds = list(SEED_SUMMONERS)
 
-    puuid_queue: deque[str] = deque()
+        if args.seeds_file and os.path.exists(args.seeds_file):
+            with open(args.seeds_file, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if "#" in line:
+                        name, tag = line.split("#", 1)
+                        seeds.append((name.strip(), tag.strip()))
 
-    print(f"\nResolving {len(seeds)} seed summoner(s)...")
-    for name, tag in seeds:
-        puuid = get_puuid(api_key, name, tag)
-        if puuid and puuid not in seen_puuids:
-            puuid_queue.append(puuid)
-            print(f"  Queued {name}#{tag} → {puuid[:16]}…")
-        elif puuid:
-            print(f"  Skipping {name}#{tag} (already queried).")
-        else:
-            print(f"  Could not resolve {name}#{tag} — check name/tag.")
+        print(f"\nResolving {len(seeds)} seed summoner(s)...")
+        for name, tag in seeds:
+            puuid = get_puuid(api_key, name, tag)
+            if puuid and puuid not in seen_puuids:
+                puuid_queue.append(puuid)
+                print(f"  Queued {name}#{tag} → {puuid[:16]}…")
+            elif puuid:
+                print(f"  Skipping {name}#{tag} (already queried).")
+            else:
+                print(f"  Could not resolve {name}#{tag} — check name/tag.")
 
     if not puuid_queue:
         print("No new PUUIDs to process. Add more seeds or update seen_puuids.txt.")
@@ -414,6 +439,13 @@ def main():
             for participant_puuid in get_participant_puuids(match_json):
                 if participant_puuid not in seen_puuids:
                     puuid_queue.append(participant_puuid)
+
+            # Persist queue every 10 matches so Ctrl+C loses minimal progress
+            if (new_rows % 10) == 0:
+                save_pending_queue(args.queue_file, puuid_queue)
+
+    # Save final queue state
+    save_pending_queue(args.queue_file, puuid_queue)
 
     print(f"\nDone. {new_rows} new rows written to: {args.out}")
     print(f"Total unique matches seen (all runs): {len(seen_match_ids)}")
