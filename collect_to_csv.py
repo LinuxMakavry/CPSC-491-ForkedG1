@@ -242,6 +242,20 @@ def append_seen_id(path: str, match_id: str):
         f.write(match_id + "\n")
 
 
+def load_csv_match_ids(csv_path: str) -> set[str]:
+    """Read match_ids already written to the CSV (used for dedup)."""
+    if not os.path.exists(csv_path) or os.path.getsize(csv_path) == 0:
+        return set()
+    ids: set[str] = set()
+    with open(csv_path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            mid = row.get("match_id", "").strip()
+            if mid:
+                ids.add(mid)
+    return ids
+
+
 def load_seen_puuids(path: str) -> set[str]:
     if not os.path.exists(path):
         return set()
@@ -339,11 +353,15 @@ def main():
         sys.exit(1)
 
     # ---- Load resume state ----
-    seen_match_ids = load_seen_ids(args.seen_file)
+    # fetched_match_ids  = matches where API call was already made (skip re-fetch)
+    # csv_match_ids      = matches already written to CSV (skip CSV write / dedup)
+    fetched_match_ids = load_seen_ids(args.seen_file)
+    csv_match_ids = load_csv_match_ids(args.out)
     seen_puuids = load_seen_puuids(args.seen_puuids)
     ensure_csv_header(args.out)
 
-    print(f"Resuming: {len(seen_match_ids)} matches already collected, "
+    print(f"Resuming: {len(csv_match_ids)} matches in CSV, "
+          f"{len(fetched_match_ids)} fetched, "
           f"{len(seen_puuids)} PUUIDs already queried.")
 
     # ---- Restore persisted queue OR build from seeds ----
@@ -410,11 +428,12 @@ def main():
             if new_rows >= args.max_matches:
                 break
 
-            if match_id in seen_match_ids:
+            # Skip API call entirely only if already fetched AND PUUIDs harvested
+            if match_id in fetched_match_ids:
                 continue
 
             match_json = get_match(api_key, match_id)
-            seen_match_ids.add(match_id)
+            fetched_match_ids.add(match_id)
             append_seen_id(args.seen_file, match_id)
 
             if not match_json:
@@ -427,21 +446,24 @@ def main():
 
             api_errors = 0
 
-            features = extract_features(match_json)
-            if features:
-                append_row(args.out, features)
-                new_rows += 1
-                if new_rows % 50 == 0:
-                    print(f"  Collected {new_rows} rows so far "
-                          f"({len(puuid_queue)} PUUIDs queued)…")
+            # Write to CSV only if not already there (dedup)
+            if match_id not in csv_match_ids:
+                features = extract_features(match_json)
+                if features:
+                    append_row(args.out, features)
+                    csv_match_ids.add(match_id)
+                    new_rows += 1
+                    if new_rows % 50 == 0:
+                        print(f"  Collected {new_rows} rows so far "
+                              f"({len(puuid_queue)} PUUIDs queued)…")
 
-            # Discover new PUUIDs from participants
+            # Always harvest participant PUUIDs (even for already-written matches)
             for participant_puuid in get_participant_puuids(match_json):
                 if participant_puuid not in seen_puuids:
                     puuid_queue.append(participant_puuid)
 
             # Persist queue every 10 matches so Ctrl+C loses minimal progress
-            if (new_rows % 10) == 0:
+            if (new_rows % 10) == 0 or (match_id in csv_match_ids):
                 save_pending_queue(args.queue_file, puuid_queue)
 
     # Save final queue state
