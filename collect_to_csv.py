@@ -48,8 +48,10 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 SEED_SUMMONERS = [
     ("Dedgurs", "Meow"),
-    ("Hide on bush", "KR1"),
-    ("Faker", "KR1"),
+    ("TSM Bjergsen", "TSM"),
+    ("C9 Blaber", "C9"),
+    ("TL Corejj", "TL"),
+    ("100 Closer", "100"),
 ]
 
 REGION = "americas"
