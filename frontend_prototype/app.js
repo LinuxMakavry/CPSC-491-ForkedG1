@@ -39,6 +39,7 @@ class AppModel {
     } catch (e) {
       this.data.loading = false;
       return { success: false, message: 'Server unavailable. Is the Flask server running?' };
+
     }
   }
 
@@ -46,6 +47,11 @@ class AppModel {
     if (!this.puuid) return;
     this.data.loading = true;
     try {
+      await fetch('http://localhost:5000/api/matches/fetch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ puuid: this.puuid, count: 10 }),
+      });
       const resp = await fetch(`http://localhost:5000/api/matches/${encodeURIComponent(this.puuid)}`);
       if (resp.ok) {
         const data = await resp.json();
@@ -94,7 +100,7 @@ class AppView {
           <a class="nav-link ${view === 'tier' ? 'active' : ''}" data-link="tier">Tier List</a>
         </nav>
         <div class="auth-buttons">
-          ${user ? `<button class="button secondary" data-action="logout">Logout</button>` : ''}
+          ${user ? `<button class="button secondary" data-action="logout">New Search</button>` : ''}
         </div>
       </header>
     `;
@@ -120,7 +126,7 @@ class AppView {
   loginTemplate() {
     return `
       <section class="card">
-        <h1 class="heading">Sign in</h1>
+        <h1 class="heading">Search for a Player</h1>
         <div class="form-group">
           <label class="label" for="username">Summoner Name</label>
           <input id="username" class="text-input" type="text" placeholder="Enter summoner name" />
@@ -129,7 +135,7 @@ class AppView {
           <label class="label" for="password">Tag (e.g. NA1)</label>
           <input id="password" class="text-input" type="text" placeholder="Enter tag line" />
         </div>
-        <button class="button" data-action="login">Sign In</button>
+        <button class="button" data-action="login">Search</button>
         <p id="loginMessage" class="status"></p>
       </section>
     `;
@@ -138,8 +144,8 @@ class AppView {
   homeTemplate(data, user) {
     return `
       <section class="card">
-        <h1 class="heading">Welcome ${user.name}</h1>
-        <p class="status">This is your WinRate dashboard.</p>
+        <h1 class="heading">${user.name}'s Dashboard</h1>
+        <p class="status">Viewing WinRate stats for ${user.name}.</p>
       </section>
       <div class="dashboard-grid">
         <div class="card small">
@@ -161,30 +167,39 @@ class AppView {
   profileTemplate(user) {
     return `
       <section class="card">
-        <h1 class="heading">Profile</h1>
-        <p><strong>Username:</strong> ${user.name}</p>
-        <p><strong>Email:</strong> user@winrate.ai</p>
+        <h1 class="heading">${user.name}'s Profile</h1>
+        <p><strong>Summoner:</strong> ${user.name}</p>
       </section>
     `;
   }
 
   championsTemplate(data) {
     if (data.loading) {
-      return `<section class="card"><p class="status">Loading match history...</p></section>`;
+      return `<section class="card"><p class="status">Fetching latest matches...</p></section>`;
     }
-    const matchList = data.matches.length > 0
-      ? data.matches.map(m => `
-          <li>
-            <strong>${m.match_id}</strong>
-            &mdash; ${m.game_date ? m.game_date.slice(0, 10) : 'Unknown date'}
-            &mdash; ${Math.floor((m.game_length || 0) / 60)}m
-            &mdash; Winner: Team ${m.winning_team || '?'}
-          </li>`).join('')
-      : '<li>No matches found.</li>';
+    if (!data.matches.length) {
+      return `<section class="card"><h1 class="heading">Match History</h1><p class="status">No matches found.</p></section>`;
+    }
+    const rows = data.matches.map(m => {
+      const result = m.player_won === true ? 'win' : m.player_won === false ? 'loss' : 'unknown';
+      const badge  = result === 'win' ? 'WIN' : result === 'loss' ? 'LOSS' : '—';
+      const date   = m.game_date
+        ? new Date(m.game_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+        : 'Unknown date';
+      const mins = Math.floor((m.game_length || 0) / 60);
+      const secs = String((m.game_length || 0) % 60).padStart(2, '0');
+      return `
+        <li class="match-row ${result}">
+          <span class="match-badge ${result}">${badge}</span>
+          <span class="match-date">${date}</span>
+          <span class="match-meta">${mins}:${secs}</span>
+          <span class="match-id">${m.match_id}</span>
+        </li>`;
+    }).join('');
     return `
       <section class="card">
         <h1 class="heading">Match History</h1>
-        <ul>${matchList}</ul>
+        <ul class="match-list">${rows}</ul>
       </section>
     `;
   }
@@ -230,7 +245,7 @@ class AppController {
         const username = document.getElementById('username').value.trim();
         const tagLine  = document.getElementById('password').value.trim();
         const messageEl = document.getElementById('loginMessage');
-        messageEl.innerText = 'Signing in...';
+        messageEl.innerText = 'Searching...';
         messageEl.style.color = '#555';
         const result = await this.model.login(username, tagLine);
         messageEl.innerText = result.message;

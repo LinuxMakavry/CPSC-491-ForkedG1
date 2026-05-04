@@ -58,3 +58,16 @@ body {
   .navbar { flex-wrap: wrap; gap: 0.7rem; }
   .navbar .nav-links { flex-wrap: wrap; }
 }
+
+/* Match history */
+.match-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+.match-row { display: flex; align-items: center; gap: 1rem; padding: 0.7rem 1rem; border-radius: 8px; border-left: 4px solid #ccc; background: #f7f9ff; }
+.match-row.win  { border-left-color: #2d7a3a; background: #f0faf2; }
+.match-row.loss { border-left-color: #b02a37; background: #fff5f5; }
+.match-badge { font-size: 0.75rem; font-weight: 700; padding: 0.2rem 0.6rem; border-radius: 20px; min-width: 44px; text-align: center; }
+.match-badge.win     { background: #d4edda; color: #2d7a3a; }
+.match-badge.loss    { background: #f8d7da; color: #b02a37; }
+.match-badge.unknown { background: #eee;    color: #777; }
+.match-date { font-weight: 600; color: #333; font-size: 0.9rem; }
+.match-meta { color: #555; font-size: 0.9rem; }
+.match-id   { margin-left: auto; color: #bbb; font-size: 0.78rem; }
