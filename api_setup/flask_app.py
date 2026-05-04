@@ -18,7 +18,8 @@ from feature_engineering import extract_team_features
 from api_setup.api_controller import RiotAPIProvider
 from database_setup.db_manager import (
     save_player, get_player_stats,
-    get_matches_for_player, get_raw_match_json, get_recent_matches
+    get_matches_for_player, get_raw_match_json, get_recent_matches,
+    update_player_wins_losses
 )
 
 app = Flask(__name__)
@@ -113,6 +114,7 @@ def fetch_matches():
     try:
         provider = RiotAPIProvider()
         provider.fetch_and_store_matches(puuid, count=count)
+        update_player_wins_losses(puuid)
     except Exception as e:
         return jsonify({"error": f"Failed to fetch matches: {e}"}), 503
     return jsonify({"message": "Matches fetched and stored", "count": count}), 200
@@ -127,7 +129,8 @@ def get_matches(puuid):
             "match_id": row["match_id"],
             "game_date": row["game_date"].isoformat() if row["game_date"] else None,
             "game_length": row["game_length"],
-            "winning_team": row["winning_team"]
+            "winning_team": row["winning_team"],
+            "player_won": row.get("player_won"),
         })
     return jsonify({"puuid": puuid, "matches": matches}), 200
 

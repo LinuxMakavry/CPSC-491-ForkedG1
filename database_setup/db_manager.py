@@ -121,6 +121,43 @@ def save_match_data(match_json):
         conn.close()
         print(f"Saved match {match_id} to database.")
 
+def update_player_wins_losses(puuid):
+    """Recomputes wins/losses for a player from stored MATCH_DATA and updates PLAYER table."""
+    conn = get_db_connection()
+    if not conn:
+        return
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        """
+        SELECT raw_json FROM MATCH_DATA
+        WHERE JSON_SEARCH(raw_json, 'one', %s, NULL, '$.metadata.participants') IS NOT NULL
+        """,
+        (puuid,)
+    )
+    rows = cursor.fetchall()
+    wins = 0
+    losses = 0
+    for row in rows:
+        try:
+            match_json = json.loads(row["raw_json"])
+            for p in match_json.get("info", {}).get("participants", []):
+                if p.get("puuid") == puuid:
+                    if p.get("win"):
+                        wins += 1
+                    else:
+                        losses += 1
+                    break
+        except Exception:
+            continue
+    cursor.execute(
+        "UPDATE PLAYER SET wins = %s, losses = %s WHERE summoner_id = %s",
+        (wins, losses, puuid)
+    )
+    conn.commit()
+    cursor.close()
+    conn.close()
+    print(f"Updated stats for {puuid}: {wins}W / {losses}L")
+
 def get_player_stats(puuid):
     conn = get_db_connection()
     if conn:
@@ -141,16 +178,34 @@ def get_matches_for_player(puuid, limit=10):
         cursor = conn.cursor(dictionary=True)
         cursor.execute(
             """
-            SELECT match_id, game_date, game_length, winning_team
+            SELECT match_id, game_date, game_length, winning_team, raw_json
             FROM MATCH_DATA
             WHERE JSON_SEARCH(raw_json, 'one', %s, NULL, '$.metadata.participants') IS NOT NULL
             ORDER BY game_date DESC LIMIT %s
             """,
             (puuid, limit)
         )
-        results = cursor.fetchall()
+        rows = cursor.fetchall()
         cursor.close()
         conn.close()
+        results = []
+        for row in rows:
+            player_won = None
+            try:
+                match_json = json.loads(row['raw_json'])
+                for p in match_json.get('info', {}).get('participants', []):
+                    if p.get('puuid') == puuid:
+                        player_won = bool(p.get('win'))
+                        break
+            except Exception:
+                pass
+            results.append({
+                'match_id': row['match_id'],
+                'game_date': row['game_date'],
+                'game_length': row['game_length'],
+                'winning_team': row['winning_team'],
+                'player_won': player_won,
+            })
         return results
     return []
 
