@@ -97,6 +97,19 @@ body {
 .stat-losses { color: #b02a37; }
 .stat-sub   { font-size: 0.82rem; color: #888; margin: 0; }
 
+/* Dashboard averages */
+.dash-avg       { font-size: 1.15rem; font-weight: 700; margin: 0.25rem 0 0 0; }
+.dash-avg-plain { font-size: 1.6rem; font-weight: 700; margin: 0.25rem 0 0 0; color: #333; }
+
+/* Most played champions */
+.champ-list { display: flex; flex-direction: column; gap: 0.45rem; }
+.champ-row  { display: flex; align-items: center; gap: 0.6rem; padding: 0.45rem 0.7rem; background: #f7f9ff; border-radius: 8px; }
+.champ-name { font-weight: 700; color: #1a1a2e; flex: 1; }
+.champ-games { font-size: 0.82rem; color: #777; }
+.champ-wr   { font-size: 0.82rem; font-weight: 700; min-width: 52px; text-align: right; }
+.champ-wr-good { color: #2d7a3a; }
+.champ-wr-bad  { color: #b02a37; }
+
 /* AI prediction badges */
 .pred-badge { font-size: 0.72rem; font-weight: 700; padding: 0.18rem 0.5rem; border-radius: 20px; white-space: nowrap; }
 .pred-badge.win  { background: #d4edda; color: #2d7a3a; }

@@ -131,7 +131,6 @@ class AppView {
         <div class="brand">WinRate AI</div>
         <nav class="nav-links">
           <a class="nav-link ${view === 'home' ? 'active' : ''}" data-link="home">Dashboard</a>
-          <a class="nav-link ${view === 'profile' ? 'active' : ''}" data-link="profile">Profile</a>
           <a class="nav-link ${view === 'champions' ? 'active' : ''}" data-link="champions">Match History</a>
         </nav>
         <div class="auth-buttons">
@@ -145,8 +144,6 @@ class AppView {
       mainContent = this.loginTemplate();
     } else if (user && view === 'home') {
       mainContent = this.homeTemplate(data, user);
-    } else if (user && view === 'profile') {
-      mainContent = this.profileTemplate(user);
     } else if (user && view === 'champions') {
       mainContent = this.championsTemplate(data);
     } else {
@@ -177,10 +174,45 @@ class AppView {
   homeTemplate(data, user) {
     const total = data.stats.total || (data.stats.wins + data.stats.losses);
     const gamesLabel = total > 0 ? `over ${total} games` : 'No games recorded yet';
+
+    // Compute averages and champion stats from match list
+    const matches = data.matches || [];
+    let avgKDA = '', avgCS = '', avgLen = '';
+    let champRows = '';
+    if (matches.length) {
+      const n = matches.length;
+      const avgK = (matches.reduce((s, m) => s + (m.kills || 0), 0) / n).toFixed(1);
+      const avgD = (matches.reduce((s, m) => s + (m.deaths || 0), 0) / n).toFixed(1);
+      const avgA = (matches.reduce((s, m) => s + (m.assists || 0), 0) / n).toFixed(1);
+      avgKDA = `<span class="kda-k">${avgK}</span> / <span class="kda-d">${avgD}</span> / <span class="kda-a">${avgA}</span>`;
+      avgCS  = (matches.reduce((s, m) => s + (m.cs || 0), 0) / n).toFixed(0);
+      const avgSecs = matches.reduce((s, m) => s + (m.game_length || 0), 0) / n;
+      avgLen = `${Math.floor(avgSecs / 60)}m ${String(Math.round(avgSecs % 60)).padStart(2, '0')}s`;
+
+      // Champion frequency + win rate
+      const champMap = {};
+      for (const m of matches) {
+        if (!m.champion) continue;
+        if (!champMap[m.champion]) champMap[m.champion] = { games: 0, wins: 0 };
+        champMap[m.champion].games++;
+        if (m.player_won) champMap[m.champion].wins++;
+      }
+      const sorted = Object.entries(champMap).sort((a, b) => b[1].games - a[1].games).slice(0, 5);
+      champRows = sorted.map(([champ, s]) => {
+        const wr = Math.round((s.wins / s.games) * 100);
+        const wrClass = wr >= 50 ? 'champ-wr-good' : 'champ-wr-bad';
+        return `<div class="champ-row">
+          <span class="champ-name">${champ}</span>
+          <span class="champ-games">${s.games}G</span>
+          <span class="champ-wr ${wrClass}">${wr}% WR</span>
+        </div>`;
+      }).join('');
+    }
+
     return `
       <section class="card">
         <h1 class="heading">${user.name}'s Dashboard</h1>
-        <p class="status">Viewing WinRate stats for ${user.name}.</p>
+        <p class="status">Summoner: <strong>${user.name}</strong> &nbsp;|&nbsp; Region: NA</p>
       </section>
       <div class="dashboard-grid">
         <div class="card small">
@@ -197,15 +229,26 @@ class AppView {
           <p class="stat-big stat-losses">${data.stats.losses}</p>
         </div>
       </div>
-    `;
-  }
-
-  profileTemplate(user) {
-    return `
-      <section class="card">
-        <h1 class="heading">${user.name}'s Profile</h1>
-        <p><strong>Summoner:</strong> ${user.name}</p>
-      </section>
+      ${matches.length ? `
+      <div class="dashboard-grid" style="margin-top:1rem">
+        <div class="card small">
+          <h3>Avg KDA</h3>
+          <p class="stat-kda dash-avg">${avgKDA}</p>
+        </div>
+        <div class="card small">
+          <h3>Avg CS</h3>
+          <p class="stat-big dash-avg-plain">${avgCS}</p>
+          <p class="stat-sub">per game</p>
+        </div>
+        <div class="card small">
+          <h3>Avg Game Length</h3>
+          <p class="stat-big dash-avg-plain">${avgLen}</p>
+        </div>
+      </div>
+      <div class="card" style="margin-top:1rem">
+        <h3 style="margin:0 0 0.75rem 0">Most Played Champions</h3>
+        <div class="champ-list">${champRows || '<p class="stat-sub">No champion data yet</p>'}</div>
+      </div>` : ''}
     `;
   }
 
