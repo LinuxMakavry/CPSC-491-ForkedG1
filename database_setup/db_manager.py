@@ -191,20 +191,34 @@ def get_matches_for_player(puuid, limit=10):
         results = []
         for row in rows:
             player_won = None
+            player_stats = {}
             try:
                 match_json = json.loads(row['raw_json'])
                 for p in match_json.get('info', {}).get('participants', []):
                     if p.get('puuid') == puuid:
                         player_won = bool(p.get('win'))
+                        cs = p.get('totalMinionsKilled', 0) + p.get('neutralMinionsKilled', 0)
+                        player_stats = {
+                            'champion':     p.get('championName', ''),
+                            'position':     p.get('teamPosition', ''),
+                            'kills':        p.get('kills', 0),
+                            'deaths':       p.get('deaths', 0),
+                            'assists':      p.get('assists', 0),
+                            'cs':           cs,
+                            'damage':       p.get('totalDamageDealtToChampions', 0),
+                            'gold':         p.get('goldEarned', 0),
+                            'vision':       p.get('visionScore', 0),
+                        }
                         break
             except Exception:
                 pass
             results.append({
-                'match_id': row['match_id'],
-                'game_date': row['game_date'],
+                'match_id':    row['match_id'],
+                'game_date':   row['game_date'],
                 'game_length': row['game_length'],
                 'winning_team': row['winning_team'],
-                'player_won': player_won,
+                'player_won':  player_won,
+                **player_stats,
             })
         return results
     return []

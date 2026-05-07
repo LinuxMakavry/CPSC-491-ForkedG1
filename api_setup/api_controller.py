@@ -2,8 +2,7 @@ import os
 import requests
 import time
 from dotenv import load_dotenv
-from database_setup.db_manager import save_player
-from database_setup.db_manager import save_match_data
+from database_setup.db_manager import save_player, save_match_data, get_raw_match_json
 
 load_dotenv()
 
@@ -67,6 +66,8 @@ class RiotAPIProvider:
     def fetch_and_store_matches(self, puuid, count=5):
         match_ids = self.get_match_ids(puuid, count=count)
         for match_id in match_ids:
+            if get_raw_match_json(match_id) is not None:
+                continue  # already stored, skip Riot API call
             match_json = self.get_match(match_id)
             if match_json:
                 save_match_data(match_json)

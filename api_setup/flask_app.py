@@ -100,6 +100,7 @@ def get_player(game_name, tag_line):
         "puuid": puuid,
         "wins": wins,
         "losses": losses,
+        "total_games": wins + losses,
         "win_rate": win_rate
     }), 200
 
@@ -126,11 +127,20 @@ def get_matches(puuid):
     matches = []
     for row in rows:
         matches.append({
-            "match_id": row["match_id"],
-            "game_date": row["game_date"].isoformat() if row["game_date"] else None,
+            "match_id":    row["match_id"],
+            "game_date":   row["game_date"].isoformat() if row["game_date"] else None,
             "game_length": row["game_length"],
             "winning_team": row["winning_team"],
-            "player_won": row.get("player_won"),
+            "player_won":  row.get("player_won"),
+            "champion":    row.get("champion", ""),
+            "position":    row.get("position", ""),
+            "kills":       row.get("kills", 0),
+            "deaths":      row.get("deaths", 0),
+            "assists":     row.get("assists", 0),
+            "cs":          row.get("cs", 0),
+            "damage":      row.get("damage", 0),
+            "gold":        row.get("gold", 0),
+            "vision":      row.get("vision", 0),
         })
     return jsonify({"puuid": puuid, "matches": matches}), 200
 
