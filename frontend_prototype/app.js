@@ -9,7 +9,10 @@ class AppModel {
     this.data = {
       stats: { wins: 0, losses: 0, total: 0, winRate: '0%' },
       matches: [],
+      matchLimit: 10,
+      hasMore: true,
       predictions: {},
+      predictionsFailed: new Set(),
       loading: false,
       error: null,
     };
@@ -49,13 +52,16 @@ class AppModel {
       const wins = stats.wins || 0;
       const losses = stats.losses || 0;
       this.data.stats = { wins, losses, total: wins + losses, winRate: stats.win_rate || '0%' };
-      const matchResp = await fetch(`http://localhost:5000/api/matches/${encodeURIComponent(this.puuid)}`);
+      const matchResp = await fetch(`http://localhost:5000/api/matches/${encodeURIComponent(this.puuid)}?count=${this.data.matchLimit}`);
       if (matchResp.ok) {
         const matchData = await matchResp.json();
         this.data.matches = matchData.matches || [];
+        this.data.hasMore = this.data.matches.length >= this.data.matchLimit;
       }
       this.data.loading = false;
       this.data.predictions = {};
+      this.data.matchLimit = 10;
+      this.data.hasMore = true;
       this.view = 'home';
       return { success: true, message: `Found ${this.user.name}!` };
     } catch (e) {
@@ -68,10 +74,11 @@ class AppModel {
     if (!this.puuid || this.data.matches.length > 0) return;
     this.data.loading = true;
     try {
-      const resp = await fetch(`http://localhost:5000/api/matches/${encodeURIComponent(this.puuid)}`);
+      const resp = await fetch(`http://localhost:5000/api/matches/${encodeURIComponent(this.puuid)}?count=${this.data.matchLimit}`);
       if (resp.ok) {
         const data = await resp.json();
         this.data.matches = data.matches || [];
+        this.data.hasMore = this.data.matches.length >= this.data.matchLimit;
       }
     } catch (e) {
       this.data.error = 'Could not load match history.';
@@ -80,22 +87,66 @@ class AppModel {
     }
   }
 
+  async loadMore() {
+    if (!this.puuid || this.data.loading) return;
+    this.data.loading = true;
+    this.data.matchLimit += 10;
+    try {
+      // First pull more matches from Riot into the DB
+      await fetch('http://localhost:5000/api/matches/fetch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ puuid: this.puuid, count: this.data.matchLimit }),
+      });
+      // Then re-query the DB for the expanded set
+      const resp = await fetch(`http://localhost:5000/api/matches/${encodeURIComponent(this.puuid)}?count=${this.data.matchLimit}`);
+      if (resp.ok) {
+        const data = await resp.json();
+        this.data.matches = data.matches || [];
+        this.data.hasMore = this.data.matches.length >= this.data.matchLimit;
+      }
+    } catch (e) {
+      this.data.matchLimit -= 10; // roll back on failure
+    } finally {
+      this.data.loading = false;
+    }
+  }
+
+  async refreshPredictions() {
+    // Clear all cached predictions and failed set, then reload
+    this.data.predictions = {};
+    this.data.predictionsFailed = new Set();
+    await this.loadPredictions();
+  }
+
   async loadPredictions() {
     if (!this.data.matches.length) return;
-    const missing = this.data.matches.filter(m => !(m.match_id in this.data.predictions));
+    const missing = this.data.matches.filter(
+      m => !(m.match_id in this.data.predictions) && !this.data.predictionsFailed.has(m.match_id)
+    );
     if (!missing.length) return;
     const results = await Promise.all(
       missing.map(async m => {
         try {
           const r = await fetch(`http://localhost:5000/api/predict/match/${m.match_id}`);
-          return [m.match_id, r.ok ? await r.json() : null];
+          if (r.ok) return [m.match_id, await r.json(), false];
+          // 404 = match not in DB for prediction; 400 = unsupported game mode (Arena etc)
+          // These won't recover on retry, mark as permanently failed
+          if (r.status === 404 || r.status === 400) return [m.match_id, null, true];
+          // 503 = model not loaded or server issue — transient, don't cache
+          return [m.match_id, null, false];
         } catch (e) {
-          return [m.match_id, null];
+          return [m.match_id, null, false];
         }
       })
     );
-    for (const [id, pred] of results) {
-      this.data.predictions[id] = pred;
+    for (const [id, pred, permanent] of results) {
+      if (pred) {
+        this.data.predictions[id] = pred;
+      } else if (permanent) {
+        this.data.predictionsFailed.add(id);
+      }
+      // transient failures (null, !permanent) are not stored — will retry next visit
     }
   }
 
@@ -103,7 +154,10 @@ class AppModel {
     this.user = null;
     this.puuid = null;
     this.data.matches = [];
+    this.data.matchLimit = 10;
+    this.data.hasMore = true;
     this.data.predictions = {};
+    this.data.predictionsFailed = new Set();
     this.view = 'login';
   }
 
@@ -129,13 +183,15 @@ class AppView {
     const nav = `
       <header class="navbar">
         <div class="brand">WinRate AI</div>
+        ${user ? `
         <nav class="nav-links">
           <a class="nav-link ${view === 'home' ? 'active' : ''}" data-link="home">Dashboard</a>
+          <a class="nav-link ${view === 'champStats' ? 'active' : ''}" data-link="champStats">Champion Stats</a>
           <a class="nav-link ${view === 'champions' ? 'active' : ''}" data-link="champions">Match History</a>
         </nav>
         <div class="auth-buttons">
-          ${user ? `<button class="button secondary" data-action="logout">New Search</button>` : ''}
-        </div>
+          <button class="button secondary" data-action="logout">New Search</button>
+        </div>` : ''}
       </header>
     `;
 
@@ -144,6 +200,8 @@ class AppView {
       mainContent = this.loginTemplate();
     } else if (user && view === 'home') {
       mainContent = this.homeTemplate(data, user);
+    } else if (user && view === 'champStats') {
+      mainContent = this.champStatsTemplate(data);
     } else if (user && view === 'champions') {
       mainContent = this.championsTemplate(data);
     } else {
@@ -261,6 +319,12 @@ class AppView {
     }
     const preds = data.predictions || {};
     const ROLE_LABEL = { TOP: 'Top', JUNGLE: 'Jng', MIDDLE: 'Mid', BOTTOM: 'Bot', UTILITY: 'Sup', '': '' };
+    const QUEUE_LABEL = {
+      420: 'Ranked Solo', 440: 'Ranked Flex', 400: 'Normal Draft', 430: 'Normal Blind',
+      450: 'ARAM', 700: 'Clash', 900: 'URF', 1020: 'One for All',
+      1400: 'Ultimate Spellbook', 1900: 'Pick URF', 1700: 'Arena', 1710: 'Arena',
+      490: 'Quickplay', 0: 'Custom',
+    };
     const rows = data.matches.map(m => {
       const result = m.player_won === true ? 'win' : m.player_won === false ? 'loss' : 'unknown';
       const badge  = result === 'win' ? 'WIN' : result === 'loss' ? 'LOSS' : '—';
@@ -280,11 +344,22 @@ class AppView {
         const predClass = modelWin ? 'win' : 'loss';
         const wrongClass = correct ? '' : ' wrong';
         predHtml = `<span class="pred-badge ${predClass}${wrongClass}">AI ${modelWin ? 'WIN' : 'LOSS'}</span>`;
+      } else if (data.predictionsFailed && data.predictionsFailed.has(m.match_id)) {
+        predHtml = `<span class="pred-badge unavailable">AI N/A</span>`;
       }
 
       const role = ROLE_LABEL[m.position || ''] || '';
+      const queueLabel = m.queue_id != null ? (QUEUE_LABEL[m.queue_id] || `Queue ${m.queue_id}`) : '';
+      const iconUrl = m.champion
+        ? `https://ddragon.leagueoflegends.com/cdn/14.10.1/img/champion/${m.champion}.png`
+        : '';
       const champHtml = m.champion
-        ? `<span class="stat-champion">${m.champion}${role ? ` <span class="stat-role">${role}</span>` : ''}</span>`
+        ? `<div class="match-champ-block">
+            <img class="match-champ-icon" src="${iconUrl}" alt="${m.champion}" onerror="this.style.display='none'">
+            <div class="match-champ-info">
+              <span class="stat-champion">${m.champion}${role ? ` <span class="stat-role">${role}</span>` : ''}</span>
+            </div>
+           </div>`
         : '';
       const kdaHtml = (m.kills !== undefined)
         ? `<span class="stat-kda"><span class="kda-k">${m.kills}</span>/<span class="kda-d">${m.deaths}</span>/<span class="kda-a">${m.assists}</span></span>`
@@ -298,7 +373,10 @@ class AppView {
         <li class="match-row ${result}">
           <div class="match-left">
             <span class="match-badge ${result}">${badge}</span>
-            <span class="match-date">${date}</span>
+            <div class="match-left-info">
+              <span class="match-date">${date}</span>
+              ${queueLabel ? `<span class="match-queue">${queueLabel}</span>` : ''}
+            </div>
             <span class="match-meta">${mins}:${secs}</span>
           </div>
           <div class="match-center">
@@ -316,8 +394,10 @@ class AppView {
     }).join('');
 
     const predCount = Object.keys(preds).length;
+    const failedCount = (data.predictionsFailed || new Set()).size;
+    const resolvedCount = predCount + failedCount;
     let accuracyNote = '';
-    if (predCount >= data.matches.length && data.matches.length > 0) {
+    if (resolvedCount >= data.matches.length && data.matches.length > 0 && predCount > 0) {
       const correctCount = data.matches.filter(m => {
         const pred = preds[m.match_id];
         if (!pred) return false;
@@ -326,14 +406,102 @@ class AppView {
                          (pred.predicted_winner === 'Team 2' && playerTeam === '200');
         return modelWin === (m.player_won === true);
       }).length;
-      accuracyNote = `<p class="ai-accuracy">AI correctly predicted ${correctCount} of ${data.matches.length} games in this sample</p>`;
+      accuracyNote = `<p class="ai-accuracy">AI correctly predicted ${correctCount} of ${predCount} applicable games</p>`;
     }
 
     return `
       <section class="card">
-        <h1 class="heading">Match History</h1>
+        <div class="match-history-header">
+          <h1 class="heading" style="margin:0">Match History</h1>
+          <button class="button secondary" data-action="refreshAI" style="font-size:0.82rem;padding:0.3rem 0.7rem">Refresh AI</button>
+        </div>
         ${accuracyNote}
         <ul class="match-list">${rows}</ul>
+        ${data.hasMore ? `
+        <div class="load-more-wrap">
+          <button class="button secondary load-more-btn" data-action="loadMore" ${data.loading ? 'disabled' : ''}>
+            ${data.loading ? 'Loading...' : 'Load More'}
+          </button>
+        </div>` : `<p class="stat-sub load-more-end">All matches loaded</p>`}
+      </section>
+    `;
+  }
+
+  champStatsTemplate(data) {
+    const matches = data.matches || [];
+    if (!matches.length) {
+      return `<section class="card"><h1 class="heading">Champion Stats</h1><p class="status">No match data loaded. Go to Dashboard and search for a player first.</p></section>`;
+    }
+
+    // Aggregate per-champion stats
+    const champMap = {};
+    for (const m of matches) {
+      if (!m.champion) continue;
+      if (!champMap[m.champion]) {
+        champMap[m.champion] = { games: 0, wins: 0, kills: 0, deaths: 0, assists: 0, cs: 0, damage: 0, gold: 0 };
+      }
+      const c = champMap[m.champion];
+      c.games++;
+      if (m.player_won) c.wins++;
+      c.kills   += m.kills   || 0;
+      c.deaths  += m.deaths  || 0;
+      c.assists += m.assists || 0;
+      c.cs      += m.cs      || 0;
+      c.damage  += m.damage  || 0;
+      c.gold    += m.gold    || 0;
+    }
+
+    const sorted = Object.entries(champMap).sort((a, b) => b[1].games - a[1].games);
+
+    const rows = sorted.map(([champ, s]) => {
+      const wr = Math.round((s.wins / s.games) * 100);
+      const wrClass = wr >= 50 ? 'cst-wr-good' : 'cst-wr-bad';
+      const avgK = (s.kills   / s.games).toFixed(1);
+      const avgD = (s.deaths  / s.games).toFixed(1);
+      const avgA = (s.assists / s.games).toFixed(1);
+      const avgCS  = Math.round(s.cs     / s.games);
+      const avgDmg = (s.damage / s.games / 1000).toFixed(1);
+      const avgGold = (s.gold  / s.games / 1000).toFixed(1);
+      const imgSrc = `https://ddragon.leagueoflegends.com/cdn/14.10.1/img/champion/${champ}.png`;
+      return `
+        <tr class="cst-row">
+          <td class="cst-champ">
+            <img class="cst-icon" src="${imgSrc}" alt="${champ}" onerror="this.style.display='none'">
+            <span>${champ}</span>
+          </td>
+          <td class="cst-center">${s.games}</td>
+          <td class="cst-center ${wrClass}">${wr}%</td>
+          <td class="cst-center">
+            <span class="kda-k">${avgK}</span> /
+            <span class="kda-d">${avgD}</span> /
+            <span class="kda-a">${avgA}</span>
+          </td>
+          <td class="cst-center">${avgCS}</td>
+          <td class="cst-center">${avgDmg}k</td>
+          <td class="cst-center">${avgGold}k</td>
+        </tr>`;
+    }).join('');
+
+    return `
+      <section class="card">
+        <h1 class="heading">Champion Stats</h1>
+        <p class="stat-sub" style="margin-bottom:1rem">Based on last ${matches.length} games</p>
+        <div class="cst-table-wrap">
+          <table class="cst-table">
+            <thead>
+              <tr>
+                <th class="cst-th">Champion</th>
+                <th class="cst-th cst-center">Games</th>
+                <th class="cst-th cst-center">Win Rate</th>
+                <th class="cst-th cst-center">Avg KDA</th>
+                <th class="cst-th cst-center">Avg CS</th>
+                <th class="cst-th cst-center">Avg Dmg</th>
+                <th class="cst-th cst-center">Avg Gold</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
       </section>
     `;
   }
@@ -366,6 +534,9 @@ class AppController {
             .then(() => this.model.loadPredictions())
             .then(() => this.view.render());
         }
+        if (viewName === 'champStats' && this.model.puuid) {
+          this.model.loadMatches().then(() => this.view.render());
+        }
         return;
       }
 
@@ -385,6 +556,18 @@ class AppController {
 
       if (action === 'logout') {
         this.model.logout();
+        this.view.render();
+      }
+
+      if (action === 'loadMore') {
+        await this.model.loadMore();
+        this.view.render();
+        await this.model.loadPredictions();
+        this.view.render();
+      }
+
+      if (action === 'refreshAI') {
+        await this.model.refreshPredictions();
         this.view.render();
       }
     });
