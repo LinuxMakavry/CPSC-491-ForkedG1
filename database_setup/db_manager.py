@@ -192,8 +192,10 @@ def get_matches_for_player(puuid, limit=10):
         for row in rows:
             player_won = None
             player_stats = {}
+            queue_id = None
             try:
                 match_json = json.loads(row['raw_json'])
+                queue_id = match_json.get('info', {}).get('queueId')
                 for p in match_json.get('info', {}).get('participants', []):
                     if p.get('puuid') == puuid:
                         player_won = bool(p.get('win'))
@@ -218,6 +220,7 @@ def get_matches_for_player(puuid, limit=10):
                 'game_length': row['game_length'],
                 'winning_team': row['winning_team'],
                 'player_won':  player_won,
+                'queue_id':    queue_id,
                 **player_stats,
             })
         return results

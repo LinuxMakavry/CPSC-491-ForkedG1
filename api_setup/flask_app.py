@@ -123,7 +123,11 @@ def fetch_matches():
 
 @app.route("/api/matches/<puuid>", methods=["GET"])
 def get_matches(puuid):
-    rows = get_matches_for_player(puuid, limit=10)
+    try:
+        limit = min(int(request.args.get('count', 10)), 100)
+    except (TypeError, ValueError):
+        limit = 10
+    rows = get_matches_for_player(puuid, limit=limit)
     matches = []
     for row in rows:
         matches.append({
@@ -141,6 +145,7 @@ def get_matches(puuid):
             "damage":      row.get("damage", 0),
             "gold":        row.get("gold", 0),
             "vision":      row.get("vision", 0),
+            "queue_id":    row.get("queue_id"),
         })
     return jsonify({"puuid": puuid, "matches": matches}), 200
 
