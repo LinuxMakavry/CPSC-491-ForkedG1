@@ -61,13 +61,45 @@ body {
 
 /* Match history */
 .match-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.5rem; }
-.match-row { display: flex; align-items: center; gap: 1rem; padding: 0.7rem 1rem; border-radius: 8px; border-left: 4px solid #ccc; background: #f7f9ff; }
+.match-row { display: flex; align-items: center; gap: 1rem; padding: 0.75rem 1rem; border-radius: 8px; border-left: 4px solid #ccc; background: #f7f9ff; }
 .match-row.win  { border-left-color: #2d7a3a; background: #f0faf2; }
 .match-row.loss { border-left-color: #b02a37; background: #fff5f5; }
 .match-badge { font-size: 0.75rem; font-weight: 700; padding: 0.2rem 0.6rem; border-radius: 20px; min-width: 44px; text-align: center; }
 .match-badge.win     { background: #d4edda; color: #2d7a3a; }
 .match-badge.loss    { background: #f8d7da; color: #b02a37; }
 .match-badge.unknown { background: #eee;    color: #777; }
-.match-date { font-weight: 600; color: #333; font-size: 0.9rem; }
-.match-meta { color: #555; font-size: 0.9rem; }
-.match-id   { margin-left: auto; color: #bbb; font-size: 0.78rem; }
+.match-date { font-weight: 600; color: #333; font-size: 0.9rem; white-space: nowrap; }
+.match-meta { color: #555; font-size: 0.9rem; white-space: nowrap; }
+.match-id   { color: #bbb; font-size: 0.75rem; white-space: nowrap; }
+
+/* Match row layout sections */
+.match-left   { display: flex; align-items: center; gap: 0.6rem; flex-shrink: 0; }
+.match-center { display: flex; flex-direction: column; gap: 0.25rem; flex: 1; min-width: 0; }
+.match-right  { display: flex; flex-direction: column; align-items: flex-end; gap: 0.3rem; flex-shrink: 0; }
+
+/* Champion + role */
+.stat-champion { font-weight: 700; color: #1a1a2e; font-size: 0.95rem; }
+.stat-role     { font-weight: 400; font-size: 0.78rem; color: #666; margin-left: 0.25rem; }
+
+/* KDA */
+.stat-kda  { font-size: 1rem; font-weight: 600; }
+.kda-k     { color: #2d7a3a; }
+.kda-d     { color: #b02a37; }
+.kda-a     { color: #555; }
+
+/* Secondary stats row */
+.match-stats-row { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+.stat-item { font-size: 0.78rem; color: #555; background: rgba(0,0,0,0.05); padding: 0.1rem 0.4rem; border-radius: 4px; white-space: nowrap; }
+
+/* Dashboard stats */
+.stat-big   { font-size: 2rem; font-weight: 700; margin: 0.25rem 0 0 0; color: #333; }
+.stat-wins  { color: #2d7a3a; }
+.stat-losses { color: #b02a37; }
+.stat-sub   { font-size: 0.82rem; color: #888; margin: 0; }
+
+/* AI prediction badges */
+.pred-badge { font-size: 0.72rem; font-weight: 700; padding: 0.18rem 0.5rem; border-radius: 20px; white-space: nowrap; }
+.pred-badge.win  { background: #d4edda; color: #2d7a3a; }
+.pred-badge.loss { background: #f8d7da; color: #b02a37; }
+.pred-badge.wrong { opacity: 0.4; text-decoration: line-through; }
+.ai-accuracy { font-size: 0.88rem; color: #555; margin: 0 0 0.75rem 0; }
