@@ -94,7 +94,10 @@ def train_xgboost(dataset_csv, model_out, metrics_out=None, test_size=0.2, seed=
         raise ValueError("Dataset must include a 'win' target column.")
 
     y = df["win"].astype(int).to_numpy()
-    X = df.drop(columns=["win"]).to_numpy(dtype=float)
+    FEATURE_COLS = ["gold_diff", "kill_diff", "assist_diff", "cs_diff",
+                    "vision_diff", "tower_diff", "dragon_diff", "baron_diff"]
+    available = [c for c in FEATURE_COLS if c in df.columns]
+    X = df[available].to_numpy(dtype=float)
 
     X_train, X_val, y_train, y_val = _train_val_split(
         X, y, test_size=test_size, seed=seed
