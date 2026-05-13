@@ -10,7 +10,7 @@ _ML_SCRIPTS = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'pro
 if _ML_SCRIPTS not in sys.path:
     sys.path.insert(0, _ML_SCRIPTS)
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 import numpy as np
 from feature_engineering import extract_team_features
@@ -24,6 +24,16 @@ from database_setup.db_manager import (
 
 app = Flask(__name__)
 CORS(app)
+
+_FRONTEND = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'frontend_prototype'))
+
+@app.route('/')
+def serve_index():
+    return send_from_directory(_FRONTEND, 'index.html')
+
+@app.route('/<path:filename>')
+def serve_static(filename):
+    return send_from_directory(_FRONTEND, filename)
 
 # --- Lazy model loader ---
 _MODEL = None
