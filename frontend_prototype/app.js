@@ -274,6 +274,109 @@ class AppView {
       }).join('');
     }
 
+    // ── Insights ────────────────────────────────────────────────────────
+    const insightItems = [];
+    if (matches.length >= 2) {
+      // 1. Current streak
+      const streakType = matches[0].player_won ? 'W' : 'L';
+      let streakCount = 1;
+      for (let i = 1; i < matches.length; i++) {
+        if (!!matches[i].player_won === !!matches[0].player_won) streakCount++;
+        else break;
+      }
+      if (streakCount >= 2) {
+        const sCls = streakType === 'W' ? 'good' : 'bad';
+        insightItems.push({ icon: streakType === 'W' ? '🔥' : '❄️',
+          label: streakType === 'W' ? 'Win streak' : 'Loss streak',
+          value: `${streakCount} in a row`, cls: sCls });
+      }
+
+      // 2. Game length tendencies
+      const buckets = { short: {w:0,g:0}, mid: {w:0,g:0}, long: {w:0,g:0} };
+      for (const m of matches) {
+        const mins = (m.game_length || 0) / 60;
+        const b = mins < 22 ? 'short' : mins < 35 ? 'mid' : 'long';
+        buckets[b].g++; if (m.player_won) buckets[b].w++;
+      }
+      const bLabels = { short: '<22 min', mid: '22–35 min', long: '35+ min' };
+      const bWithData = Object.entries(buckets).filter(([,s]) => s.g >= 2);
+      if (bWithData.length >= 2) {
+        const bBest  = bWithData.reduce((a, b) => (b[1].w/b[1].g) > (a[1].w/a[1].g) ? b : a);
+        const bWorst = bWithData.reduce((a, b) => (b[1].w/b[1].g) < (a[1].w/a[1].g) ? b : a);
+        const bBestWR  = Math.round(bBest[1].w  / bBest[1].g  * 100);
+        const bWorstWR = Math.round(bWorst[1].w / bWorst[1].g * 100);
+        if (bBest[0] !== bWorst[0] && bBestWR - bWorstWR >= 15) {
+          insightItems.push({ icon: '⏱️', label: 'Best game length',
+            value: `${bLabels[bBest[0]]} — ${bBestWR}% WR`,
+            sub: `Struggles in ${bLabels[bWorst[0]]} games (${bWorstWR}% WR)`,
+            cls: bBestWR >= 50 ? 'good' : 'bad' });
+        }
+      }
+
+      // 3. KDA impact
+      const kdaHigh = matches.filter(m => !m.deaths || (m.kills + m.assists) / m.deaths >= 3);
+      const kdaLow  = matches.filter(m =>  m.deaths  && (m.kills + m.assists) / m.deaths <  3);
+      if (kdaHigh.length >= 2 && kdaLow.length >= 2) {
+        const highWR  = Math.round(kdaHigh.filter(m => m.player_won).length / kdaHigh.length * 100);
+        const lowWR   = Math.round(kdaLow.filter(m  => m.player_won).length / kdaLow.length  * 100);
+        const kdaDiff = highWR - lowWR;
+        if (Math.abs(kdaDiff) >= 15) {
+          insightItems.push({ icon: '⚔️', label: 'KDA impact',
+            value: `KDA ≥ 3.0 → ${highWR}% WR`,
+            sub: `vs ${lowWR}% when below 3.0`,
+            cls: kdaDiff > 0 ? 'good' : 'neutral' });
+        }
+      }
+
+      // 4. Best role (≥2 games each)
+      const iRoleMap = {};
+      const ROLE_FULL = { TOP: 'Top', JUNGLE: 'Jungle', MIDDLE: 'Mid', BOTTOM: 'Bot', UTILITY: 'Support' };
+      for (const m of matches) {
+        if (!m.position) continue;
+        if (!iRoleMap[m.position]) iRoleMap[m.position] = {w:0, g:0};
+        iRoleMap[m.position].g++; if (m.player_won) iRoleMap[m.position].w++;
+      }
+      const roleEntries = Object.entries(iRoleMap).filter(([,s]) => s.g >= 2);
+      if (roleEntries.length >= 2) {
+        const bestRole  = roleEntries.reduce((a, b) => (b[1].w/b[1].g) > (a[1].w/a[1].g) ? b : a);
+        const worstRole = roleEntries.reduce((a, b) => (b[1].w/b[1].g) < (a[1].w/a[1].g) ? b : a);
+        const brWR = Math.round(bestRole[1].w  / bestRole[1].g  * 100);
+        const wrWR = Math.round(worstRole[1].w / worstRole[1].g * 100);
+        if (brWR - wrWR >= 15) {
+          insightItems.push({ icon: '🏆', label: 'Strongest role',
+            value: `${ROLE_FULL[bestRole[0]] || bestRole[0]} (${brWR}% WR)`,
+            sub: `Weakest: ${ROLE_FULL[worstRole[0]] || worstRole[0]} (${wrWR}% WR)`,
+            cls: brWR >= 50 ? 'good' : 'neutral' });
+        }
+      }
+
+      // 5. Recent form — last 5 vs prior
+      if (matches.length >= 8) {
+        const recent   = matches.slice(0, 5);
+        const older    = matches.slice(5);
+        const recentWR = Math.round(recent.filter(m => m.player_won).length / recent.length * 100);
+        const olderWR  = Math.round(older.filter(m  => m.player_won).length / older.length  * 100);
+        const formDiff = recentWR - olderWR;
+        if (Math.abs(formDiff) >= 15) {
+          insightItems.push({ icon: formDiff > 0 ? '📈' : '📉', label: 'Recent form',
+            value: `${formDiff > 0 ? 'Improving' : 'Declining'} — ${recentWR}% last 5 games`,
+            sub: `vs ${olderWR}% in prior games`,
+            cls: formDiff > 0 ? 'good' : 'bad' });
+        }
+      }
+    }
+    const insightsHtml = insightItems.length
+      ? insightItems.map(it => `
+          <div class="insight-row">
+            <span class="insight-icon">${it.icon}</span>
+            <div class="insight-body">
+              <span class="insight-label">${it.label}</span>
+              <span class="insight-value ${it.cls}">${it.value}</span>
+              ${it.sub ? `<span class="insight-sub">${it.sub}</span>` : ''}
+            </div>
+          </div>`).join('')
+      : '<p class="stat-sub">Load more matches for insights to appear.</p>';
+
     return `
       <section class="card">
         <h1 class="heading">${user.name}'s Dashboard</h1>
@@ -313,6 +416,10 @@ class AppView {
       <div class="card" style="margin-top:1rem">
         <h3 style="margin:0 0 0.75rem 0">Most Played Champions</h3>
         <div class="champ-list">${champRows || '<p class="stat-sub">No champion data yet</p>'}</div>
+      </div>
+      <div class="card" style="margin-top:1rem">
+        <h3 style="margin:0 0 0.75rem 0">Insights</h3>
+        <div class="insights-list">${insightsHtml}</div>
       </div>` : ''}
     `;
   }

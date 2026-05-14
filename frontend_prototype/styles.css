@@ -176,6 +176,23 @@ body {
 .match-history-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; }
 
 /* Champion Stats table */
+.insights-list { display: flex; flex-direction: column; gap: 0.5rem; }
+.insight-row { display: flex; align-items: flex-start; gap: 0.75rem; padding: 0.55rem 0.65rem; border-radius: 8px; background: rgba(0,0,0,0.03); }
+.insight-icon { font-size: 1.1rem; flex-shrink: 0; margin-top: 1px; }
+.insight-body { display: flex; flex-direction: column; gap: 0.1rem; }
+.insight-label { font-size: 0.75rem; color: #888; text-transform: uppercase; letter-spacing: 0.03em; }
+.insight-value { font-weight: 700; font-size: 0.95rem; }
+.insight-value.good    { color: #2d7a3a; }
+.insight-value.bad     { color: #b02a37; }
+.insight-value.neutral { color: #555; }
+.insight-sub { font-size: 0.8rem; color: #888; }
+body.dark .insight-row { background: rgba(255,255,255,0.05); }
+body.dark .insight-label { color: #8b95a9; }
+body.dark .insight-value.good    { color: #4ade80; }
+body.dark .insight-value.bad     { color: #fc8181; }
+body.dark .insight-value.neutral { color: #a0aec0; }
+body.dark .insight-sub { color: #8b95a9; }
+
 .cst-table-wrap { overflow-x: auto; }
 .cst-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
 .cst-th { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 2px solid #e2e8f0; color: #555; font-weight: 600; white-space: nowrap; }
