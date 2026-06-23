@@ -39,7 +39,7 @@ body.dark .match-date { color: #c5cfe0; }
 body.dark .match-meta,
 body.dark .match-id  { color: #5a6580; }
 body.dark .stat-item { background: rgba(255,255,255,0.07); color: #a0aec0; }
-body.dark .stat-champion { color: #e2e8f0; }
+body.dark .stat-champion { color: #f1f5f9; }
 body.dark .stat-big { color: #e2e8f0; }
 body.dark .dash-avg-plain { color: #e2e8f0; }
 body.dark .champ-games { color: #a0aec0; }
@@ -54,7 +54,8 @@ body.dark .kda-d  { color: #fc8181; }
 body.dark .kda-a  { color: #93c5fd; }
 body.dark .stat-sub { color: #8b95a9; }
 body.dark .champ-row { background: #252a3d; }
-body.dark .champ-name { color: #e2e8f0; }
+body.dark .champ-name { color: #f1f5f9; }
+body.dark .cst-champ { color: #f1f5f9; }
 body.dark .cst-row { border-bottom-color: #252a3d; }
 body.dark .cst-row:hover { background: #252a3d; }
 body.dark .cst-th { color: #8b95a9; border-bottom-color: #3a4060; }
