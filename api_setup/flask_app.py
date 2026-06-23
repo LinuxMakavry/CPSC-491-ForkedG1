@@ -188,5 +188,148 @@ def predict_from_db(match_id):
     return jsonify(result), 200
 
 
+def _build_player_context(puuid):
+    """Build a rich text summary of player stats from stored match data for the LLM."""
+    stats = get_player_stats(puuid) or {}
+    matches = get_matches_for_player(puuid, limit=50)
+
+    if not matches:
+        return "No match data available for this player yet."
+
+    summoner_name = stats.get("summoner_name", "Unknown")
+    wins = stats.get("wins", 0) or 0
+    losses = stats.get("losses", 0) or 0
+    total = wins + losses
+    wr = round(wins / total * 100) if total > 0 else 0
+
+    valid = [m for m in matches if m.get("kills") is not None]
+
+    avg_kills   = round(sum(m["kills"]   for m in valid) / len(valid), 1) if valid else 0
+    avg_deaths  = round(sum(m["deaths"]  for m in valid) / len(valid), 1) if valid else 0
+    avg_assists = round(sum(m["assists"] for m in valid) / len(valid), 1) if valid else 0
+    avg_cs      = round(sum(m["cs"]      for m in valid) / len(valid), 1) if valid else 0
+    avg_vision  = round(sum(m["vision"]  for m in valid) / len(valid), 1) if valid else 0
+    avg_damage  = round(sum(m["damage"]  for m in valid) / len(valid))    if valid else 0
+    avg_gold    = round(sum(m["gold"]    for m in valid) / len(valid))    if valid else 0
+
+    # Per-champion breakdown
+    champ_map = {}
+    for m in valid:
+        champ = m.get("champion") or "Unknown"
+        if champ not in champ_map:
+            champ_map[champ] = {"games": 0, "wins": 0, "kills": 0, "deaths": 0, "assists": 0, "cs": 0}
+        d = champ_map[champ]
+        d["games"] += 1
+        if m.get("player_won"):
+            d["wins"] += 1
+        d["kills"]   += m["kills"]
+        d["deaths"]  += m["deaths"]
+        d["assists"] += m["assists"]
+        d["cs"]      += m["cs"]
+
+    champ_list = sorted(champ_map.items(), key=lambda x: x[1]["games"], reverse=True)
+
+    # Per-role breakdown
+    role_map = {}
+    for m in valid:
+        role = m.get("position") or "UNKNOWN"
+        if role not in role_map:
+            role_map[role] = {"games": 0, "wins": 0}
+        role_map[role]["games"] += 1
+        if m.get("player_won"):
+            role_map[role]["wins"] += 1
+
+    # Recent form: last 5 vs rest
+    last5 = valid[:5]
+    prior = valid[5:]
+    last5_wr = round(sum(1 for m in last5 if m.get("player_won")) / len(last5) * 100) if last5 else None
+    prior_wr = round(sum(1 for m in prior if m.get("player_won")) / len(prior) * 100) if prior else None
+
+    lines = [
+        f"=== PLAYER: {summoner_name} ===",
+        f"Record: {wins}W / {losses}L ({wr}% win rate) across {total} stored games",
+        f"Avg KDA: {avg_kills}/{avg_deaths}/{avg_assists}",
+        f"Avg CS: {avg_cs} | Avg Vision: {avg_vision} | Avg Damage: {avg_damage:,} | Avg Gold: {avg_gold:,}",
+        "",
+        "=== CHAMPION BREAKDOWN (sorted by games played) ===",
+    ]
+    for champ, d in champ_list[:10]:
+        g = d["games"]
+        cwr  = round(d["wins"]    / g * 100) if g > 0 else 0
+        ck   = round(d["kills"]   / g, 1)
+        cd   = round(d["deaths"]  / g, 1)
+        ca   = round(d["assists"] / g, 1)
+        ccs  = round(d["cs"]      / g, 1)
+        lines.append(f"  {champ}: {g} games, {cwr}% WR, {ck}/{cd}/{ca} KDA, {ccs} avg CS")
+
+    lines += ["", "=== ROLE BREAKDOWN ==="]
+    for role, d in sorted(role_map.items(), key=lambda x: x[1]["games"], reverse=True):
+        g = d["games"]
+        rwr = round(d["wins"] / g * 100) if g > 0 else 0
+        lines.append(f"  {role}: {g} games, {rwr}% WR")
+
+    if last5_wr is not None:
+        trend = ""
+        if prior_wr is not None:
+            trend = " (improving)" if last5_wr > prior_wr else " (declining)" if last5_wr < prior_wr else " (stable)"
+        lines += ["", "=== RECENT FORM ===", f"  Last 5 games: {last5_wr}% WR{trend}"]
+        if prior_wr is not None:
+            lines.append(f"  Prior games:  {prior_wr}% WR")
+
+    return "\n".join(lines)
+
+
+@app.route("/api/chat", methods=["POST"])
+def chat():
+    body = request.get_json(silent=True) or {}
+    puuid    = body.get("puuid", "").strip()
+    question = body.get("question", "").strip()
+    history  = body.get("history", [])
+
+    if not puuid or not question:
+        return jsonify({"error": "puuid and question are required"}), 400
+
+    if not isinstance(history, list):
+        history = []
+
+    context = _build_player_context(puuid)
+
+    system_prompt = (
+        "You are WinRateAI Coach, a personalized League of Legends coaching assistant.\n"
+        "You have access to the player's match history statistics below.\n"
+        "Always reference the player's actual data in your responses.\n"
+        "Be concise and actionable. Tie every suggestion directly to their statistics.\n\n"
+        + context
+    )
+
+    messages = [{"role": "system", "content": system_prompt}]
+
+    # Include last 10 turns of conversation history
+    for entry in history[-10:]:
+        if (isinstance(entry, dict)
+                and entry.get("role") in ("user", "assistant")
+                and isinstance(entry.get("content"), str)):
+            messages.append({"role": entry["role"], "content": entry["content"][:2000]})
+
+    messages.append({"role": "user", "content": question[:1000]})
+
+    try:
+        from openai import OpenAI
+        client = OpenAI(
+            api_key=os.getenv("NRP_LLM_API_KEY"),
+            base_url="https://ellm.nrp-nautilus.io/v1"
+        )
+        response = client.chat.completions.create(
+            model="gpt-oss",
+            messages=messages,
+            max_tokens=500,
+            temperature=0.7
+        )
+        reply = response.choices[0].message.content
+        return jsonify({"reply": reply}), 200
+    except Exception as e:
+        return jsonify({"error": f"LLM unavailable: {str(e)}"}), 503
+
+
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
