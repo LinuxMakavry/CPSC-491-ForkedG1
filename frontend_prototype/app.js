@@ -15,6 +15,9 @@ class AppModel {
       predictionsFailed: new Set(),
       loading: false,
       error: null,
+      chatHistory: [],
+      chatLoading: false,
+      chatRatings: {},
     };
   }
 
@@ -150,6 +153,30 @@ class AppModel {
     }
   }
 
+  async sendChat(question) {
+    if (!question || !question.trim() || !this.puuid || this.data.chatLoading) return;
+    this.data.chatLoading = true;
+    const historyToSend = this.data.chatHistory.map(m => ({ role: m.role, content: m.content }));
+    this.data.chatHistory.push({ role: 'user', content: question.trim() });
+    try {
+      const resp = await fetch('http://localhost:5000/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ puuid: this.puuid, question: question.trim(), history: historyToSend }),
+      });
+      if (resp.ok) {
+        const json = await resp.json();
+        this.data.chatHistory.push({ role: 'assistant', content: json.reply });
+      } else {
+        this.data.chatHistory.push({ role: 'assistant', content: 'Sorry, I could not generate a response. Please try again.' });
+      }
+    } catch (e) {
+      this.data.chatHistory.push({ role: 'assistant', content: 'Coach is unavailable. Is the server running?' });
+    } finally {
+      this.data.chatLoading = false;
+    }
+  }
+
   logout() {
     this.user = null;
     this.puuid = null;
@@ -158,6 +185,9 @@ class AppModel {
     this.data.hasMore = true;
     this.data.predictions = {};
     this.data.predictionsFailed = new Set();
+    this.data.chatHistory = [];
+    this.data.chatLoading = false;
+    this.data.chatRatings = {};
     this.view = 'login';
   }
 
@@ -189,6 +219,7 @@ class AppView {
           <a class="nav-link ${view === 'home' ? 'active' : ''}" data-link="home">Dashboard</a>
           <a class="nav-link ${view === 'champStats' ? 'active' : ''}" data-link="champStats">Champion Stats</a>
           <a class="nav-link ${view === 'champions' ? 'active' : ''}" data-link="champions">Match History</a>
+          <a class="nav-link ${view === 'coach' ? 'active' : ''}" data-link="coach">Coach</a>
         </nav>
         <div class="auth-buttons">
           <button class="button secondary" data-action="logout">New Search</button>
@@ -211,6 +242,8 @@ class AppView {
       mainContent = this.champStatsTemplate(data);
     } else if (user && view === 'champions') {
       mainContent = this.championsTemplate(data);
+    } else if (user && view === 'coach') {
+      mainContent = this.coachTemplate(data);
     } else {
       mainContent = '<div class="card"><p class="status">This view is not available.</p></div>';
     }
@@ -620,6 +653,70 @@ class AppView {
     `;
   }
 
+  coachTemplate(data) {
+    const SUGGESTED = [
+      'Why do I keep losing games?',
+      'Which champion should I focus on?',
+      'What is my biggest weakness right now?',
+      'How is my recent form trending?',
+    ];
+
+    const renderMsg = (text) => {
+      const escaped = text
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return escaped.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+    };
+
+    const messages = data.chatHistory.map((msg, i) => {
+      if (msg.role === 'user') {
+        return `<div class="coach-msg coach-msg-user"><p>${renderMsg(msg.content)}</p></div>`;
+      }
+      const rating = data.chatRatings[i];
+      const upCls   = rating === 'up'   ? ' rated' : '';
+      const downCls = rating === 'down' ? ' rated' : '';
+      return `
+        <div class="coach-msg coach-msg-assistant">
+          <div class="coach-msg-label">AI Coach</div>
+          <p>${renderMsg(msg.content)}</p>
+          <div class="coach-rating-row">
+            <button class="coach-rate-btn${upCls}" data-action="rateChat" data-index="${i}" data-rating="up" title="Helpful">&#128077;</button>
+            <button class="coach-rate-btn${downCls}" data-action="rateChat" data-index="${i}" data-rating="down" title="Not helpful">&#128078;</button>
+          </div>
+        </div>`;
+    }).join('');
+
+    const ratedCount   = Object.keys(data.chatRatings).length;
+    const helpfulCount = Object.values(data.chatRatings).filter(r => r === 'up').length;
+    const evalNote = ratedCount > 0
+      ? `<p class="coach-eval-note">${helpfulCount} of ${ratedCount} responses rated helpful</p>`
+      : '';
+
+    return `
+      <section class="card coach-card">
+        <div class="coach-header">
+          <h1 class="heading" style="margin:0">AI Coach</h1>
+          ${evalNote}
+        </div>
+        <p class="stat-sub coach-intro">Ask about your performance to get personalized coaching advice.</p>
+        ${!data.chatHistory.length ? `
+        <div class="coach-suggestions">
+          ${SUGGESTED.map(q => `<button class="coach-suggest-btn" data-action="suggestChat" data-q="${q}">${q}</button>`).join('')}
+        </div>` : ''}
+        <div class="coach-messages" id="coachMessages">
+          ${messages}
+          ${data.chatLoading ? '<div class="coach-typing"><span></span><span></span><span></span></div>' : ''}
+        </div>
+        <div class="coach-input-row">
+          <input id="coachInput" class="text-input coach-input" type="text"
+            placeholder="Ask your coach..." ${data.chatLoading ? 'disabled' : ''} />
+          <button class="button coach-send-btn" data-action="sendChat" ${data.chatLoading ? 'disabled' : ''}>
+            Send
+          </button>
+        </div>
+      </section>
+    `;
+  }
+
 }
 
 /* Controller */
@@ -690,8 +787,58 @@ class AppController {
       if (action === 'refreshAI') {
         await this.model.refreshPredictions();
         this.view.render();
+        return;
+      }
+
+      if (action === 'sendChat') {
+        const input = document.getElementById('coachInput');
+        if (!input) return;
+        const q = input.value.trim();
+        if (!q) return;
+        input.value = '';
+        this.view.render();
+        await this.model.sendChat(q);
+        this.view.render();
+        this._scrollCoach();
+        return;
+      }
+
+      if (action === 'suggestChat') {
+        const q = e.target.getAttribute('data-q');
+        if (!q) return;
+        this.view.render();
+        await this.model.sendChat(q);
+        this.view.render();
+        this._scrollCoach();
+        return;
+      }
+
+      if (action === 'rateChat') {
+        const idx    = parseInt(e.target.getAttribute('data-index'), 10);
+        const rating = e.target.getAttribute('data-rating');
+        this.model.data.chatRatings[idx] = rating;
+        this.view.render();
+        return;
       }
     });
+
+    this.view.app.addEventListener('keydown', async (e) => {
+      if (e.key === 'Enter' && e.target.id === 'coachInput') {
+        const input = e.target;
+        const q = input.value.trim();
+        if (!q || this.model.data.chatLoading) return;
+        input.value = '';
+        this.view.render();
+        await this.model.sendChat(q);
+        this.view.render();
+        this._scrollCoach();
+      }
+    });
+  }
+
+  _scrollCoach() {
+    const el = document.getElementById('coachMessages');
+    if (el) el.scrollTop = el.scrollHeight;
   }
 }
 
