@@ -2,10 +2,12 @@ import sys
 import os
 import json
 
+# Add project root to sys.path so sibling packages (api_setup, database_setup) are importable
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+# Add ML Scripts folder so feature_engineering can be imported without a package prefix
 _ML_SCRIPTS = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'projects', 'ML Scripts'))
 if _ML_SCRIPTS not in sys.path:
     sys.path.insert(0, _ML_SCRIPTS)
@@ -23,29 +25,36 @@ from database_setup.db_manager import (
 )
 
 app = Flask(__name__)
-CORS(app)
+CORS(app)  # Allow cross-origin requests from the frontend during local development
 
+# Absolute path to the frontend folder so Flask can serve static files
 _FRONTEND = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'frontend_prototype'))
 
 @app.route('/')
 def serve_index():
+    # Serve the SPA entry point — Flask doubles as both API server and static host
     return send_from_directory(_FRONTEND, 'index.html')
 
 @app.route('/<path:filename>')
 def serve_static(filename):
+    # Serve any other frontend asset (app.js, styles.css, etc.)
     return send_from_directory(_FRONTEND, filename)
 
 # --- Lazy model loader ---
+# The XGBoost model is loaded on first prediction request, not at startup,
+# so the server still starts even if the model file hasn't been trained yet.
 _MODEL = None
 _MODEL_PATHS = [
     os.path.abspath(
         os.path.join(os.path.dirname(__file__), '..', 'projects', 'ML Scripts', 'models', 'latest_xgb.json')
     ),
+    # Fallback path from the test suite output directory
     os.path.abspath(
         os.path.join(os.path.dirname(__file__), '..', 'projects', 'tests', 'output', 'xgb_model.json')
     ),
 ]
 
+# The 8 team-level differential features the XGBoost model was trained on
 FEATURE_COLS = [
     "gold_diff", "kill_diff", "assist_diff", "cs_diff",
     "vision_diff", "tower_diff", "dragon_diff", "baron_diff"
@@ -54,6 +63,7 @@ FEATURE_COLS = [
 def _get_model():
     global _MODEL
     if _MODEL is None:
+        # Walk the model path list and load the first one that exists on disk
         model_path = next((path for path in _MODEL_PATHS if os.path.exists(path)), None)
         if model_path is None:
             return None
@@ -65,13 +75,16 @@ def _get_model():
 def _run_prediction(match_json):
     import xgboost as xgb
     try:
+        # extract_team_features computes blue-minus-red differentials from raw Riot JSON
         features = extract_team_features(match_json)
     except Exception as e:
         return None, f"Invalid match JSON: {e}"
     model = _get_model()
     if model is None:
         return None, "Model not loaded"
+    # Build a (1, 8) array in the same column order the model was trained on
     arr = np.array([[features[k] for k in FEATURE_COLS]])
+    # Model outputs P(Team 1 wins); >= 0.5 → Team 1, < 0.5 → Team 2
     prob = float(model.predict(xgb.DMatrix(arr))[0])
     return {
         "team1_win_probability": prob,
@@ -91,6 +104,7 @@ def health():
 def get_player(game_name, tag_line):
     try:
         provider = RiotAPIProvider()
+        # Resolve Riot ID (name#tag) to the account-level PUUID via Riot API
         puuid = provider.get_puuid(game_name, tag_line)
     except Exception:
         return jsonify({"error": "Riot API unavailable"}), 503
@@ -98,6 +112,7 @@ def get_player(game_name, tag_line):
     if not puuid:
         return jsonify({"error": "Player not found"}), 404
 
+    # Upsert player record so PUUID is tracked in the local DB
     save_player(puuid, game_name)
     stats = get_player_stats(puuid) or {}
     wins = stats.get("wins", 0) or 0
@@ -124,7 +139,9 @@ def fetch_matches():
     count = body.get("count", 5)
     try:
         provider = RiotAPIProvider()
+        # Pull match IDs from Riot, download full match JSON, and store in MATCH_DATA table
         provider.fetch_and_store_matches(puuid, count=count)
+        # Recompute wins/losses from stored match data and update PLAYER table
         update_player_wins_losses(puuid)
     except Exception as e:
         return jsonify({"error": f"Failed to fetch matches: {e}"}), 503
@@ -204,6 +221,7 @@ def _build_player_context(puuid):
 
     valid = [m for m in matches if m.get("kills") is not None]
 
+    # Compute overall averages across all stored matches with participant data
     avg_kills   = round(sum(m["kills"]   for m in valid) / len(valid), 1) if valid else 0
     avg_deaths  = round(sum(m["deaths"]  for m in valid) / len(valid), 1) if valid else 0
     avg_assists = round(sum(m["assists"] for m in valid) / len(valid), 1) if valid else 0
@@ -227,6 +245,7 @@ def _build_player_context(puuid):
         d["assists"] += m["assists"]
         d["cs"]      += m["cs"]
 
+    # Sort champions by games played descending so the LLM sees the most relevant first
     champ_list = sorted(champ_map.items(), key=lambda x: x[1]["games"], reverse=True)
 
     # Per-role breakdown
@@ -239,7 +258,7 @@ def _build_player_context(puuid):
         if m.get("player_won"):
             role_map[role]["wins"] += 1
 
-    # Recent form: last 5 vs rest
+    # Recent form: last 5 vs rest to detect improvement or decline
     last5 = valid[:5]
     prior = valid[5:]
     last5_wr = round(sum(1 for m in last5 if m.get("player_won")) / len(last5) * 100) if last5 else None
@@ -263,6 +282,8 @@ def _build_player_context(puuid):
         lines.append(f"  {champ}: {g} games, {cwr}% WR, {ck}/{cd}/{ca} KDA, {ccs} avg CS")
 
     lines += ["", "=== ROLE BREAKDOWN ==="]
+    # Map Riot's internal position strings to human-readable labels.
+    # UNKNOWN covers ARAM, Arena, and other modes where position is undefined.
     ROLE_NOTE = {
         "UNKNOWN": "UNKNOWN (ARAM/Arena/other modes)",
         "TOP": "TOP", "JUNGLE": "JUNGLE", "MIDDLE": "MIDDLE",
@@ -298,8 +319,10 @@ def chat():
     if not isinstance(history, list):
         history = []
 
+    # Build a structured text block from DB stats to inject into the system prompt (RAG pattern)
     context = _build_player_context(puuid)
 
+    # System prompt instructs the model to stay grounded in the player's actual data
     system_prompt = (
         "You are WinRateAI Coach, a personalized League of Legends coaching assistant.\n"
         "You have access to the player's match history statistics below.\n"
@@ -310,17 +333,20 @@ def chat():
 
     messages = [{"role": "system", "content": system_prompt}]
 
-    # Include last 10 turns of conversation history
+    # Include last 10 turns of conversation history to maintain multi-turn context
     for entry in history[-10:]:
         if (isinstance(entry, dict)
                 and entry.get("role") in ("user", "assistant")
                 and isinstance(entry.get("content"), str)):
+            # Cap each history message at 2000 chars to keep token usage predictable
             messages.append({"role": entry["role"], "content": entry["content"][:2000]})
 
+    # Append the current user question; cap at 1000 chars to prevent prompt injection bloat
     messages.append({"role": "user", "content": question[:1000]})
 
     try:
         from openai import OpenAI
+        # NRP-hosted gpt-oss endpoint; uses OpenAI-compatible API with a custom base_url
         client = OpenAI(
             api_key=os.getenv("NRP_LLM_API_KEY"),
             base_url="https://ellm.nrp-nautilus.io/v1"
@@ -328,8 +354,8 @@ def chat():
         response = client.chat.completions.create(
             model="gpt-oss",
             messages=messages,
-            max_tokens=2000,
-            temperature=0.7
+            max_tokens=2000,   # Raised from 500 to avoid mid-sentence cutoffs
+            temperature=0.7    # Moderate creativity; lower = more deterministic advice
         )
         reply = response.choices[0].message.content
         return jsonify({"reply": reply}), 200

@@ -39,6 +39,7 @@ def _binary_auc(y_true, y_prob):
     if pos == 0 or neg == 0:
         return 0.5
 
+    # Wilcoxon-Mann-Whitney rank-sum formula for AUC — no sklearn dependency
     order = np.argsort(y_prob)
     ranks = np.empty_like(order, dtype=float)
     ranks[order] = np.arange(1, len(y_prob) + 1, dtype=float)
@@ -93,9 +94,10 @@ def train_xgboost(dataset_csv, model_out, metrics_out=None, test_size=0.2, seed=
     if "win" not in df.columns:
         raise ValueError("Dataset must include a 'win' target column.")
 
-    y = df["win"].astype(int).to_numpy()
+    y = df["win"].astype(int).to_numpy()  # binary label: 1 = blue side wins
     FEATURE_COLS = ["gold_diff", "kill_diff", "assist_diff", "cs_diff",
                     "vision_diff", "tower_diff", "dragon_diff", "baron_diff"]
+    # Only use columns actually present in the dataset (graceful degradation)
     available = [c for c in FEATURE_COLS if c in df.columns]
     X = df[available].to_numpy(dtype=float)
 
@@ -107,12 +109,12 @@ def train_xgboost(dataset_csv, model_out, metrics_out=None, test_size=0.2, seed=
     dval = xgb.DMatrix(X_val, label=y_val)
 
     params = {
-        "objective": "binary:logistic",
-        "eval_metric": "logloss",
-        "max_depth": 5,
-        "eta": 0.1,
-        "subsample": 0.9,
-        "colsample_bytree": 0.9,
+        "objective": "binary:logistic",  # outputs probability in [0, 1]
+        "eval_metric": "logloss",         # log-loss used for early stopping decisions
+        "max_depth": 5,                   # limits tree depth to reduce overfitting
+        "eta": 0.1,                       # learning rate (shrinkage)
+        "subsample": 0.9,                 # fraction of rows sampled per tree
+        "colsample_bytree": 0.9,          # fraction of features sampled per tree
         "seed": seed,
     }
 
@@ -120,9 +122,9 @@ def train_xgboost(dataset_csv, model_out, metrics_out=None, test_size=0.2, seed=
     model = xgb.train(
         params=params,
         dtrain=dtrain,
-        num_boost_round=300,
+        num_boost_round=300,          # maximum number of trees
         evals=evals,
-        early_stopping_rounds=25,
+        early_stopping_rounds=25,     # stop if val logloss doesn't improve for 25 rounds
         verbose_eval=False,
     )
 

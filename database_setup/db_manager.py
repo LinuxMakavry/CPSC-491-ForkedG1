@@ -7,12 +7,14 @@ import json
 load_dotenv()
 
 def get_db_connection():
+    # Returns a new MySQL connection using credentials from the .env file.
+    # Returns None (rather than raising) so callers can handle the failure gracefully.
     try:
         connection = mysql.connector.connect(
             host="127.0.0.1",
             port=3306,
             user="root",
-            password=os.getenv("DB_PASSWORD"),
+            password=os.getenv("DB_PASSWORD"),  # loaded from .env by python-dotenv
             database="lol_prediction_db",
             auth_plugin='mysql_native_password' 
         )
@@ -22,7 +24,8 @@ def get_db_connection():
         return None
 
 def save_player(puuid, summoner_name):
-    # Implements the basic flow of data storage
+    # INSERT IGNORE means we silently skip if the PUUID already exists,
+    # so repeated logins for the same player don't cause errors.
     conn = get_db_connection()
     if conn:
         cursor = conn.cursor()
@@ -72,7 +75,8 @@ def initialize_db():
         print("Database initialized: Tables verified/created.")
 
 def save_match_data(match_json):
-    # Stores raw match JSON plus core summary fields for ML training
+    # Stores the full Riot match JSON plus pre-extracted summary fields.
+    # The raw_json column lets us re-derive any stat later without re-calling the API.
     if not match_json:
         return
 
@@ -83,18 +87,19 @@ def save_match_data(match_json):
     if not match_id:
         return
 
-    # Convert milliseconds to datetime if present
+    # gameCreation comes from Riot in milliseconds; convert to a Python datetime
     game_creation_ms = info.get("gameCreation")
     game_date = None
     if game_creation_ms:
         game_date = datetime.utcfromtimestamp(game_creation_ms / 1000)
 
-    game_length = info.get("gameDuration")
+    game_length = info.get("gameDuration")  # seconds
+    # Find which team won by checking the 'win' flag on each team object
     winning_team = None
     teams = info.get("teams", [])
     for team in teams:
         if team.get("win"):
-            winning_team = str(team.get("teamId"))
+            winning_team = str(team.get("teamId"))  # '100' = blue side, '200' = red side
             break
 
     raw_json = json.dumps(match_json)
@@ -127,6 +132,8 @@ def update_player_wins_losses(puuid):
     if not conn:
         return
     cursor = conn.cursor(dictionary=True)
+    # JSON_SEARCH finds all MATCH_DATA rows where this PUUID appears in participants.
+    # This is slower than a join table but avoids a schema migration for the prototype.
     cursor.execute(
         """
         SELECT raw_json FROM MATCH_DATA
@@ -140,6 +147,7 @@ def update_player_wins_losses(puuid):
     for row in rows:
         try:
             match_json = json.loads(row["raw_json"])
+            # Walk participants list to find this specific player's outcome
             for p in match_json.get("info", {}).get("participants", []):
                 if p.get("puuid") == puuid:
                     if p.get("win"):
@@ -173,6 +181,8 @@ def get_player_stats(puuid):
     return None
 
 def get_matches_for_player(puuid, limit=10):
+    # Fetch the N most recent matches for a player and parse out their individual stats
+    # from the embedded raw_json so the caller gets a clean flat dict per match.
     conn = get_db_connection()
     if conn:
         cursor = conn.cursor(dictionary=True)
@@ -202,11 +212,11 @@ def get_matches_for_player(puuid, limit=10):
                         cs = p.get('totalMinionsKilled', 0) + p.get('neutralMinionsKilled', 0)
                         player_stats = {
                             'champion':     p.get('championName', ''),
-                            'position':     p.get('teamPosition', ''),
+                            'position':     p.get('teamPosition', ''),  # blank for ARAM/Arena
                             'kills':        p.get('kills', 0),
                             'deaths':       p.get('deaths', 0),
                             'assists':      p.get('assists', 0),
-                            'cs':           cs,
+                            'cs':           cs,  # totalMinionsKilled + neutralMinionsKilled
                             'damage':       p.get('totalDamageDealtToChampions', 0),
                             'gold':         p.get('goldEarned', 0),
                             'vision':       p.get('visionScore', 0),

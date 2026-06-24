@@ -1,23 +1,25 @@
 // MVC Prototype for WinRate AI
 
-/* Model */
+/* =====================================================================
+   MODEL — owns all application state and communicates with the Flask API
+   ===================================================================== */
 class AppModel {
   constructor() {
     this.user = null; // logged in user
     this.view = 'login';
-    this.puuid = null;
+    this.puuid = null;   // Riot account-level identifier, used as the DB primary key
     this.data = {
       stats: { wins: 0, losses: 0, total: 0, winRate: '0%' },
       matches: [],
-      matchLimit: 10,
-      hasMore: true,
-      predictions: {},
-      predictionsFailed: new Set(),
+      matchLimit: 10,    // how many matches to request from the API at once
+      hasMore: true,     // false when all stored matches have been loaded
+      predictions: {},   // keyed by match_id → XGBoost prediction result
+      predictionsFailed: new Set(),  // match IDs where prediction will never succeed (404/400)
       loading: false,
       error: null,
-      chatHistory: [],
+      chatHistory: [],   // array of {role, content} objects for the Coach tab
       chatLoading: false,
-      chatRatings: {},
+      chatRatings: {},   // keyed by message index → 'up' | 'down'
     };
   }
 
@@ -31,6 +33,7 @@ class AppModel {
       if (el) el.innerText = msg;
     };
     try {
+      // Step 1: Resolve Riot ID → PUUID and upsert player in the DB
       const resp = await fetch(
         `http://localhost:5000/api/player/${encodeURIComponent(username)}/${encodeURIComponent(tagLine)}`
       );
@@ -43,11 +46,13 @@ class AppModel {
       this.puuid = playerData.puuid;
       this.user = { name: playerData.summoner_name };
       setMsg('Fetching match history...');
+      // Step 2: Pull latest 10 matches from Riot API and store in MATCH_DATA table
       await fetch('http://localhost:5000/api/matches/fetch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ puuid: this.puuid, count: 10 }),
       });
+      // Step 3: Re-query player stats now that wins/losses have been recomputed from stored matches
       const statsResp = await fetch(
         `http://localhost:5000/api/player/${encodeURIComponent(username)}/${encodeURIComponent(tagLine)}`
       );
@@ -55,6 +60,7 @@ class AppModel {
       const wins = stats.wins || 0;
       const losses = stats.losses || 0;
       this.data.stats = { wins, losses, total: wins + losses, winRate: stats.win_rate || '0%' };
+      // Step 4: Load the initial match list for display
       const matchResp = await fetch(`http://localhost:5000/api/matches/${encodeURIComponent(this.puuid)}?count=${this.data.matchLimit}`);
       if (matchResp.ok) {
         const matchData = await matchResp.json();
@@ -109,7 +115,7 @@ class AppModel {
         this.data.hasMore = this.data.matches.length >= this.data.matchLimit;
       }
     } catch (e) {
-      this.data.matchLimit -= 10; // roll back on failure
+      this.data.matchLimit -= 10; // roll back on failure so next attempt requests the right count
     } finally {
       this.data.loading = false;
     }
@@ -124,10 +130,12 @@ class AppModel {
 
   async loadPredictions() {
     if (!this.data.matches.length) return;
+    // Only request predictions for matches we haven't resolved yet
     const missing = this.data.matches.filter(
       m => !(m.match_id in this.data.predictions) && !this.data.predictionsFailed.has(m.match_id)
     );
     if (!missing.length) return;
+    // Fire all prediction requests in parallel for speed
     const results = await Promise.all(
       missing.map(async m => {
         try {
@@ -147,6 +155,7 @@ class AppModel {
       if (pred) {
         this.data.predictions[id] = pred;
       } else if (permanent) {
+        // Permanently failed matches are stored in a Set to avoid retrying them
         this.data.predictionsFailed.add(id);
       }
       // transient failures (null, !permanent) are not stored — will retry next visit
@@ -156,6 +165,8 @@ class AppModel {
   async sendChat(question) {
     if (!question || !question.trim() || !this.puuid || this.data.chatLoading) return;
     this.data.chatLoading = true;
+    // Snapshot history before appending the new user message so the server
+    // receives prior turns only (the current question is sent separately)
     const historyToSend = this.data.chatHistory.map(m => ({ role: m.role, content: m.content }));
     this.data.chatHistory.push({ role: 'user', content: question.trim() });
     try {
@@ -200,7 +211,10 @@ class AppModel {
   }
 }
 
-/* View */
+/* =====================================================================
+   VIEW — pure rendering; no state mutations; rebuilds the entire DOM on
+   each render() call using innerHTML for simplicity
+   ===================================================================== */
 class AppView {
   constructor(model) {
     this.model = model;
@@ -308,6 +322,8 @@ class AppView {
     }
 
     // ── Insights ────────────────────────────────────────────────────────
+    // Each insight requires a minimum sample size (≥2 games per bucket)
+    // and a meaningful gap (≥15 pp) before it's shown, to avoid noise.
     const insightItems = [];
     if (matches.length >= 2) {
       // 1. Current streak
@@ -484,12 +500,14 @@ class AppView {
       let predHtml = '';
       const pred = preds[m.match_id];
       if (pred) {
+        // Determine which team the player was on so we can compare to the model's prediction.
+        // winning_team is '100' (blue) or '200' (red); player was on the winning team if player_won.
         const playerTeam = m.player_won ? m.winning_team : (m.winning_team === '100' ? '200' : '100');
         const modelWin = (pred.predicted_winner === 'Team 1' && playerTeam === '100') ||
                          (pred.predicted_winner === 'Team 2' && playerTeam === '200');
         const correct = (modelWin === (m.player_won === true));
         const predClass = modelWin ? 'win' : 'loss';
-        const wrongClass = correct ? '' : ' wrong';
+        const wrongClass = correct ? '' : ' wrong';  // adds red outline when model was wrong
         predHtml = `<span class="pred-badge ${predClass}${wrongClass}">AI ${modelWin ? 'WIN' : 'LOSS'}</span>`;
       } else if (data.predictionsFailed && data.predictionsFailed.has(m.match_id)) {
         predHtml = `<span class="pred-badge unavailable">AI N/A</span>`;
@@ -662,8 +680,10 @@ class AppView {
     ];
 
     const renderMsg = (text) => {
+      // Escape HTML first to prevent XSS from LLM-generated content
       const escaped = text
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      // Then convert **bold** markdown syntax to <strong> tags
       return escaped.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
     };
 
@@ -719,7 +739,11 @@ class AppView {
 
 }
 
-/* Controller */
+/* =====================================================================
+   CONTROLLER — listens to DOM events via event delegation on the root
+   #app element, maps data-action / data-link attributes to model calls,
+   and re-renders the view after each state change
+   ===================================================================== */
 class AppController {
   constructor(model, view) {
     this.model = model;
@@ -733,12 +757,15 @@ class AppController {
   }
 
   addEventListeners() {
+    // Single delegated click handler for the entire app — avoids re-attaching
+    // listeners on every render cycle since innerHTML replaces the DOM tree
     this.view.app.addEventListener('click', async (e) => {
       const link = e.target.closest('[data-link]');
       if (link) {
         const viewName = link.getAttribute('data-link');
         this.model.navigate(viewName);
         this.view.render();
+        // Lazy-load matches + predictions when the user switches to those tabs
         if (viewName === 'champions' && this.model.puuid) {
           this.model.loadMatches()
             .then(() => this.view.render())
@@ -767,7 +794,7 @@ class AppController {
 
       if (action === 'toggleTheme') {
         const dark = document.body.classList.toggle('dark');
-        localStorage.setItem('theme', dark ? 'dark' : 'light');
+        localStorage.setItem('theme', dark ? 'dark' : 'light');  // persist across page reloads
         this.view.render();
         return;
       }
@@ -796,7 +823,7 @@ class AppController {
         const q = input.value.trim();
         if (!q) return;
         input.value = '';
-        this.view.render();
+        this.view.render();  // show the user's message immediately before awaiting LLM
         await this.model.sendChat(q);
         this.view.render();
         this._scrollCoach();
@@ -804,6 +831,7 @@ class AppController {
       }
 
       if (action === 'suggestChat') {
+        // Suggested question buttons pre-fill and submit in one click
         const q = e.target.getAttribute('data-q');
         if (!q) return;
         this.view.render();
@@ -814,6 +842,7 @@ class AppController {
       }
 
       if (action === 'rateChat') {
+        // Store the rating keyed by message index; re-render updates button appearance
         const idx    = parseInt(e.target.getAttribute('data-index'), 10);
         const rating = e.target.getAttribute('data-rating');
         this.model.data.chatRatings[idx] = rating;
@@ -822,6 +851,7 @@ class AppController {
       }
     });
 
+    // Allow Enter key to submit a chat message without clicking the Send button
     this.view.app.addEventListener('keydown', async (e) => {
       if (e.key === 'Enter' && e.target.id === 'coachInput') {
         const input = e.target;
@@ -837,6 +867,7 @@ class AppController {
   }
 
   _scrollCoach() {
+    // After a new message is rendered, scroll the chat window to the bottom
     const el = document.getElementById('coachMessages');
     if (el) el.scrollTop = el.scrollHeight;
   }
@@ -846,7 +877,7 @@ const appModel = new AppModel();
 const appView = new AppView(appModel);
 new AppController(appModel, appView);
 
-// Apply persisted theme before first render
+// Apply persisted theme before first render so there's no flash of light mode
 if (localStorage.getItem('theme') === 'dark') {
   document.body.classList.add('dark');
   appView.render();
