@@ -263,10 +263,16 @@ def _build_player_context(puuid):
         lines.append(f"  {champ}: {g} games, {cwr}% WR, {ck}/{cd}/{ca} KDA, {ccs} avg CS")
 
     lines += ["", "=== ROLE BREAKDOWN ==="]
+    ROLE_NOTE = {
+        "UNKNOWN": "UNKNOWN (ARAM/Arena/other modes)",
+        "TOP": "TOP", "JUNGLE": "JUNGLE", "MIDDLE": "MIDDLE",
+        "BOTTOM": "BOTTOM", "UTILITY": "UTILITY (Support)",
+    }
     for role, d in sorted(role_map.items(), key=lambda x: x[1]["games"], reverse=True):
         g = d["games"]
         rwr = round(d["wins"] / g * 100) if g > 0 else 0
-        lines.append(f"  {role}: {g} games, {rwr}% WR")
+        label = ROLE_NOTE.get(role, role)
+        lines.append(f"  {label}: {g} games, {rwr}% WR")
 
     if last5_wr is not None:
         trend = ""
