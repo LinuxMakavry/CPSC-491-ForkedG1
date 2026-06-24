@@ -322,7 +322,7 @@ def chat():
         response = client.chat.completions.create(
             model="gpt-oss",
             messages=messages,
-            max_tokens=500,
+            max_tokens=1000,
             temperature=0.7
         )
         reply = response.choices[0].message.content
