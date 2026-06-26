@@ -54,10 +54,12 @@ _MODEL_PATHS = [
     ),
 ]
 
-# The 5 mid-game (15-min) differential features the XGBoost model is trained on.
-# Baron is excluded (spawns at 20 min); vision/assists are not available in timeline frames.
+# The 8 post-game team-level differential features the XGBoost model is trained on.
+# These are end-of-game stats from the Match V5 API. The 15-min timeline features
+# are used separately for LLM coaching context, not for this model.
 FEATURE_COLS = [
-    "gold_diff", "kill_diff", "cs_diff", "tower_diff", "dragon_diff"
+    "gold_diff", "kill_diff", "assist_diff", "cs_diff",
+    "vision_diff", "tower_diff", "dragon_diff", "baron_diff"
 ]
 
 def _get_model():
@@ -75,26 +77,22 @@ def _get_model():
 def _run_prediction(match_json, timeline_json=None):
     import xgboost as xgb
     try:
-        if timeline_json is not None:
-            # Preferred path: use 15-min timeline features (genuine mid-game prediction)
-            from feature_engineering import extract_15min_features
-            features = extract_15min_features(timeline_json, match_json=match_json)
-        else:
-            # Fallback to post-game features when no timeline is available
-            features = extract_team_features(match_json)
+        # XGBoost always uses post-game features from match JSON (8 features).
+        # timeline_json is accepted but ignored here — it is only used for LLM context.
+        features = extract_team_features(match_json)
     except Exception as e:
         return None, f"Invalid match JSON: {e}"
     model = _get_model()
     if model is None:
         return None, "Model not loaded"
-    # Build a (1, N) array in the same column order the model was trained on
-    arr = np.array([[features.get(k, 0) for k in FEATURE_COLS]])
+    # Build a (1, 8) array in the same column order the model was trained on
+    arr = np.array([[features[k] for k in FEATURE_COLS]])
     # Model outputs P(Team 1 / blue side wins); >= 0.5 → Team 1, < 0.5 → Team 2
     prob = float(model.predict(xgb.DMatrix(arr))[0])
     return {
         "team1_win_probability": prob,
         "predicted_winner": "Team 1" if prob >= 0.5 else "Team 2",
-        "features_used": {k: features.get(k, 0) for k in FEATURE_COLS}
+        "features_used": {k: features[k] for k in FEATURE_COLS}
     }, None
 
 
