@@ -21,7 +21,7 @@ from api_setup.api_controller import RiotAPIProvider
 from database_setup.db_manager import (
     save_player, get_player_stats,
     get_matches_for_player, get_raw_match_json, get_recent_matches,
-    update_player_wins_losses
+    update_player_wins_losses, get_timeline_for_match
 )
 
 app = Flask(__name__)
@@ -54,10 +54,10 @@ _MODEL_PATHS = [
     ),
 ]
 
-# The 8 team-level differential features the XGBoost model was trained on
+# The 5 mid-game (15-min) differential features the XGBoost model is trained on.
+# Baron is excluded (spawns at 20 min); vision/assists are not available in timeline frames.
 FEATURE_COLS = [
-    "gold_diff", "kill_diff", "assist_diff", "cs_diff",
-    "vision_diff", "tower_diff", "dragon_diff", "baron_diff"
+    "gold_diff", "kill_diff", "cs_diff", "tower_diff", "dragon_diff"
 ]
 
 def _get_model():
@@ -72,24 +72,29 @@ def _get_model():
         _MODEL.load_model(model_path)
     return _MODEL
 
-def _run_prediction(match_json):
+def _run_prediction(match_json, timeline_json=None):
     import xgboost as xgb
     try:
-        # extract_team_features computes blue-minus-red differentials from raw Riot JSON
-        features = extract_team_features(match_json)
+        if timeline_json is not None:
+            # Preferred path: use 15-min timeline features (genuine mid-game prediction)
+            from feature_engineering import extract_15min_features
+            features = extract_15min_features(timeline_json, match_json=match_json)
+        else:
+            # Fallback to post-game features when no timeline is available
+            features = extract_team_features(match_json)
     except Exception as e:
         return None, f"Invalid match JSON: {e}"
     model = _get_model()
     if model is None:
         return None, "Model not loaded"
-    # Build a (1, 8) array in the same column order the model was trained on
-    arr = np.array([[features[k] for k in FEATURE_COLS]])
-    # Model outputs P(Team 1 wins); >= 0.5 → Team 1, < 0.5 → Team 2
+    # Build a (1, N) array in the same column order the model was trained on
+    arr = np.array([[features.get(k, 0) for k in FEATURE_COLS]])
+    # Model outputs P(Team 1 / blue side wins); >= 0.5 → Team 1, < 0.5 → Team 2
     prob = float(model.predict(xgb.DMatrix(arr))[0])
     return {
         "team1_win_probability": prob,
         "predicted_winner": "Team 1" if prob >= 0.5 else "Team 2",
-        "features_used": {k: features[k] for k in FEATURE_COLS}
+        "features_used": {k: features.get(k, 0) for k in FEATURE_COLS}
     }, None
 
 
@@ -198,7 +203,15 @@ def predict_from_db(match_id):
         match_json = json.loads(raw)
     except Exception:
         return jsonify({"error": "Stored match JSON is malformed"}), 500
-    result, err = _run_prediction(match_json)
+    # Use timeline data for 15-min prediction if available; fall back to post-game otherwise
+    timeline_json = None
+    raw_timeline = get_timeline_for_match(match_id)
+    if raw_timeline:
+        try:
+            timeline_json = json.loads(raw_timeline)
+        except Exception:
+            pass
+    result, err = _run_prediction(match_json, timeline_json=timeline_json)
     if err:
         status = 503 if "Model not loaded" in err else 400
         return jsonify({"error": err}), status
@@ -302,6 +315,50 @@ def _build_player_context(puuid):
         lines += ["", "=== RECENT FORM ===", f"  Last 5 games: {last5_wr}% WR{trend}"]
         if prior_wr is not None:
             lines.append(f"  Prior games:  {prior_wr}% WR")
+
+    # --- Early game (15-min) trends from timeline data ---
+    # For each stored match that has timeline data, compute the player's team gold
+    # advantage at 15 min and correlate it with the actual game outcome.
+    from feature_engineering import extract_15min_features
+    early_games = []
+    for m in valid:
+        raw_timeline = get_timeline_for_match(m.get("match_id", ""))
+        if not raw_timeline:
+            continue
+        try:
+            timeline_json = json.loads(raw_timeline)
+            feat = extract_15min_features(timeline_json)
+            # Determine player's team from win/loss + winning_team fields
+            winning_team = m.get("winning_team")
+            player_won   = m.get("player_won")
+            if player_won is None or winning_team is None:
+                continue
+            # gold_diff is always team 100 (blue) minus team 200 (red).
+            # Flip sign if the player was on team 200 so positive = player's team was ahead.
+            on_blue = (player_won and winning_team == "100") or (not player_won and winning_team == "200")
+            gold_adv = feat["gold_diff"] if on_blue else -feat["gold_diff"]
+            early_games.append({"gold_adv": gold_adv, "won": player_won})
+        except Exception:
+            continue
+
+    if early_games:
+        avg_gold_adv = sum(g["gold_adv"] for g in early_games) / len(early_games)
+        ahead  = [g for g in early_games if g["gold_adv"] > 0]
+        behind = [g for g in early_games if g["gold_adv"] <= 0]
+        lines += ["", "=== EARLY GAME — 15-MIN TRENDS ===",
+                  f"  Based on {len(early_games)} of {len(valid)} games with timeline data",
+                  f"  Avg 15-min gold advantage (player's team): {avg_gold_adv:+,.0f}"]
+        if ahead:
+            ahead_wr = round(sum(1 for g in ahead if g["won"]) / len(ahead) * 100)
+            lines.append(f"  Win rate when ahead at 15 min ({len(ahead)} games): {ahead_wr}%")
+        if behind:
+            behind_wr = round(sum(1 for g in behind if g["won"]) / len(behind) * 100)
+            lines.append(f"  Win rate when behind at 15 min ({len(behind)} games): {behind_wr}%")
+        if ahead and behind:
+            # Surfacing the conversion/comeback gap for the LLM to reference
+            conv_gap = round(sum(1 for g in ahead if g["won"]) / len(ahead) * 100
+                             - sum(1 for g in behind if g["won"]) / len(behind) * 100)
+            lines.append(f"  Conversion gap (ahead WR - behind WR): {conv_gap:+d} pp")
 
     return "\n".join(lines)
 

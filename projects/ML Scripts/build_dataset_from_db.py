@@ -12,25 +12,35 @@ if REPO_ROOT not in sys.path:
 if CURRENT_DIR not in sys.path:
     sys.path.insert(0, CURRENT_DIR)
 
-from database_setup.db_manager import get_raw_match_json, get_recent_matches
-from feature_engineering import extract_team_features
+from database_setup.db_manager import get_raw_match_json, get_timeline_for_match, get_match_ids_with_timelines
+from feature_engineering import extract_15min_features
 
 
 def build_dataset_from_db(limit=500, out_csv=None):
+    """Build a training dataset using 15-minute timeline features.
+
+    Only matches that have both MATCH_DATA and TIMELINE_DATA stored are included.
+    The win label is derived from the match JSON (1 = blue side / team 100 wins).
+    """
     rows = []
     skipped = 0
-    recent = get_recent_matches(limit=limit)
+    # Only pull matches that have timeline data — required for mid-game features
+    eligible = get_match_ids_with_timelines(limit=limit)
 
-    for row in recent:
+    for row in eligible:
         match_id = row.get("match_id")
-        raw = get_raw_match_json(match_id)
-        if not raw:
+        raw_match = get_raw_match_json(match_id)
+        raw_timeline = get_timeline_for_match(match_id)
+
+        if not raw_match or not raw_timeline:
             skipped += 1
             continue
 
         try:
-            match_json = json.loads(raw)
-            features = extract_team_features(match_json)
+            match_json    = json.loads(raw_match)
+            timeline_json = json.loads(raw_timeline)
+            # Pass both so the win label is attached from match JSON
+            features = extract_15min_features(timeline_json, match_json=match_json)
             rows.append(features)
         except Exception:
             skipped += 1
@@ -53,7 +63,7 @@ def build_dataset_from_db(limit=500, out_csv=None):
 
 def main():
     default_out = os.path.join(CURRENT_DIR, "data", "train.csv")
-    parser = argparse.ArgumentParser(description="Build ML dataset from MATCH_DATA rows in MySQL.")
+    parser = argparse.ArgumentParser(description="Build ML dataset from 15-min timeline features in MySQL.")
     parser.add_argument("--limit", type=int, default=500, help="Max recent matches to read from DB.")
     parser.add_argument("--out-csv", default=default_out, help="Output dataset CSV path.")
     args = parser.parse_args()

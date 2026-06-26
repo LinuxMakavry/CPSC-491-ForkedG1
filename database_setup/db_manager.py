@@ -69,6 +69,13 @@ def initialize_db():
                 raw_json LONGTEXT
             )
         """)
+        # Create TIMELINE_DATA table for per-minute snapshot JSON (used for 15-min features)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS TIMELINE_DATA (
+                match_id VARCHAR(50) PRIMARY KEY,
+                timeline_json LONGTEXT
+            )
+        """)
         conn.commit()
         cursor.close()
         conn.close()
@@ -260,6 +267,59 @@ def get_recent_matches(limit=20):
         conn.close()
         return results
     return []
+
+
+def save_timeline_data(match_id, timeline_json):
+    """Store the raw Riot timeline JSON for a match. Uses INSERT IGNORE to skip duplicates."""
+    conn = get_db_connection()
+    if conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT IGNORE INTO TIMELINE_DATA (match_id, timeline_json) VALUES (%s, %s)",
+            (match_id, json.dumps(timeline_json))
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+
+def get_timeline_for_match(match_id):
+    """Retrieve the raw timeline JSON string for a match, or None if not yet stored."""
+    conn = get_db_connection()
+    if conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT timeline_json FROM TIMELINE_DATA WHERE match_id = %s", (match_id,)
+        )
+        row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        return row[0] if row else None
+    return None
+
+
+def get_match_ids_with_timelines(limit=500):
+    """Return match IDs that have both MATCH_DATA and TIMELINE_DATA rows stored.
+    Used by the dataset builder to find matches eligible for 15-min feature extraction."""
+    conn = get_db_connection()
+    if conn:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT m.match_id, m.game_date
+            FROM MATCH_DATA m
+            INNER JOIN TIMELINE_DATA t ON m.match_id = t.match_id
+            ORDER BY m.game_date DESC
+            LIMIT %s
+            """,
+            (limit,)
+        )
+        results = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return results
+    return []
+
 
 if __name__ == "__main__":
     initialize_db()
